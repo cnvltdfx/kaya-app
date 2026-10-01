@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 360">
+  <defs><radialGradient id="bg" cx="50%" cy="40%" r="70%"><stop offset="0" stop-color="#fbf3e2"/><stop offset="1" stop-color="#f1e2c4"/></radialGradient></defs>
+  <rect width="400" height="360" fill="url(#bg)"/>
+  <g fill="#6f9a3a" opacity=".55">
+    <path d="M20 330 Q60 280 120 300 Q70 310 20 330Z"/><path d="M380 330 Q340 280 280 300 Q330 310 380 330Z"/>
+    <path d="M30 40 Q80 20 120 60 Q70 50 30 40Z"/><path d="M370 40 Q320 20 280 60 Q330 50 370 40Z"/>
+  </g>
+  <g transform="translate(10 121.60000000000001) scale(0.72)">
+    <ellipse cx="100" cy="262" rx="78" ry="10" fill="#000" opacity=".08"/>
+    <path d="M40 70 Q30 80 30 110 L30 225 Q30 255 60 258 L140 258 Q170 255 170 225 L170 110 Q170 80 160 70 Z" fill="#8fae3c"/>
+    <path d="M40 120 L170 120 L170 225 Q170 255 140 258 L60 258 Q30 255 30 225 Z" fill="#b8792f" opacity=".55"/>
+    <path d="M45 85 Q42 150 48 235" stroke="#fff" stroke-width="7" stroke-linecap="round" opacity=".35" fill="none"/>
+    <rect x="52" y="140" width="96" height="60" rx="8" fill="#fbf4e4" stroke="#7a4a1d" stroke-width="2.5"/>
+    <text x="100" y="166" text-anchor="middle" font-family="Georgia,serif" font-size="13" font-weight="700" fill="#5c3612">KOOL KAYA</text>
+    <text x="100" y="185" text-anchor="middle" font-family="Georgia,serif" font-size="10" fill="#7a4a1d">artisan</text>
+    <path d="M28 55 Q20 70 40 75 Q70 82 100 80 Q130 82 160 75 Q180 70 172 55 Q100 35 28 55 Z" fill="#d9c49b" stroke="#a07b48" stroke-width="2"/>
+    <path d="M32 68 Q100 86 168 68" stroke="#8a5a2b" stroke-width="3" fill="none"/>
+    <circle cx="100" cy="76" r="5" fill="#8a5a2b"/>
+  </g>
+  <g transform="translate(170 121.60000000000001) scale(0.72)">
+    <ellipse cx="100" cy="262" rx="78" ry="10" fill="#000" opacity=".08"/>
+    <path d="M40 70 Q30 80 30 110 L30 225 Q30 255 60 258 L140 258 Q170 255 170 225 L170 110 Q170 80 160 70 Z" fill="#b8792f"/>
+    <path d="M40 120 L170 120 L170 225 Q170 255 140 258 L60 258 Q30 255 30 225 Z" fill="#8fae3c" opacity=".55"/>
+    <path d="M45 85 Q42 150 48 235" stroke="#fff" stroke-width="7" stroke-linecap="round" opacity=".35" fill="none"/>
+    <rect x="52" y="140" width="96" height="60" rx="8" fill="#fbf4e4" stroke="#7a4a1d" stroke-width="2.5"/>
+    <text x="100" y="166" text-anchor="middle" font-family="Georgia,serif" font-size="13" font-weight="700" fill="#5c3612">KOOL KAYA</text>
+    <text x="100" y="185" text-anchor="middle" font-family="Georgia,serif" font-size="10" fill="#7a4a1d">artisan</text>
+    <path d="M28 55 Q20 70 40 75 Q70 82 100 80 Q130 82 160 75 Q180 70 172 55 Q100 35 28 55 Z" fill="#d9c49b" stroke="#a07b48" stroke-width="2"/>
+    <path d="M32 68 Q100 86 168 68" stroke="#8a5a2b" stroke-width="3" fill="none"/>
+    <circle cx="100" cy="76" r="5" fill="#8a5a2b"/>
+  </g>
+  <g transform="translate(80 77.6) scale(0.92)">
+    <ellipse cx="100" cy="262" rx="78" ry="10" fill="#000" opacity=".08"/>
+    <path d="M40 70 Q30 80 30 110 L30 225 Q30 255 60 258 L140 258 Q170 255 170 225 L170 110 Q170 80 160 70 Z" fill="#b8792f"/>
+    <path d="M40 120 L170 120 L170 225 Q170 255 140 258 L60 258 Q30 255 30 225 Z" fill="#8fae3c" opacity=".55"/>
+    <path d="M45 85 Q42 150 48 235" stroke="#fff" stroke-width="7" stroke-linecap="round" opacity=".35" fill="none"/>
+    <rect x="52" y="140" width="96" height="60" rx="8" fill="#fbf4e4" stroke="#7a4a1d" stroke-width="2.5"/>
+    <text x="100" y="166" text-anchor="middle" font-family="Georgia,serif" font-size="13" font-weight="700" fill="#5c3612">KOOL KAYA</text>
+    <text x="100" y="185" text-anchor="middle" font-family="Georgia,serif" font-size="10" fill="#7a4a1d">artisan</text>
+    <path d="M28 55 Q20 70 40 75 Q70 82 100 80 Q130 82 160 75 Q180 70 172 55 Q100 35 28 55 Z" fill="#d9c49b" stroke="#a07b48" stroke-width="2"/>
+    <path d="M32 68 Q100 86 168 68" stroke="#8a5a2b" stroke-width="3" fill="none"/>
+    <circle cx="100" cy="76" r="5" fill="#8a5a2b"/>
+  </g>
+</svg>
