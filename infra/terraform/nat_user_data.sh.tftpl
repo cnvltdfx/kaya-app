@@ -1,0 +1,16 @@
+#!/bin/bash
+# Turns an Amazon Linux 2023 instance into a NAT for the VPC's private subnets.
+set -euo pipefail
+
+echo 'net.ipv4.ip_forward = 1' > /etc/sysctl.d/90-nat.conf
+sysctl -p /etc/sysctl.d/90-nat.conf
+
+dnf install -y iptables-services
+systemctl enable --now iptables
+
+# The iptables-services defaults REJECT forwarded traffic; replace them with plain masquerading.
+iptables -F
+iptables -t nat -F
+IFACE=$(ip route show default | awk '{print $5; exit}')
+iptables -t nat -A POSTROUTING -o "$IFACE" -s ${vpc_cidr} -j MASQUERADE
+iptables-save > /etc/sysconfig/iptables

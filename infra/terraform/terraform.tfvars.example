@@ -1,0 +1,19 @@
+# Copy to terraform.tfvars and adjust.
+aws_region    = "ap-southeast-1"
+instance_type = "t3.micro"
+
+asg_min_size       = 2
+asg_max_size       = 6
+warm_pool_min_size = 2
+
+# Switch to ForecastAndScale after reviewing a few days of forecasts.
+predictive_scaling_mode = "ForecastOnly"
+
+# Extra capacity for a sale (Asia/Singapore time).
+scheduled_scaling_actions = {
+  "1111-sale-start" = { start_time = "2026-11-10T22:00:00Z", min_size = 4, max_size = 10, desired_capacity = 4 }
+  "1111-sale-end"   = { start_time = "2026-11-12T16:00:00Z", min_size = 2, max_size = 6, desired_capacity = 2 }
+}
+
+# acm_certificate_arn        = "arn:aws:acm:ap-southeast-1:123456789012:certificate/..."
+# restrict_alb_to_cloudfront = true

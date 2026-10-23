@@ -1,0 +1,38 @@
+- Refactor code base (Neeharika)
+    - splitting to frontend-backend
+    - decoupling data store
+    - redeploy
+
+- Set up Aurora (Leandro)
+    - Populate with data 
+
+- Route53 DNS set up (Implement at a later date)
+    - With WAF
+    - CloudFront CDN
+    - Load frontend code into s3 (after refactor)
+
+- Order processing (Wen Kang)
+    - SQS queue reieves Order   
+    - Lambda is triggered to fetch and process the Order (order-worker lambda) (transact order)
+    - SNS trigger for notif to customer / Staff
+    - Lambda email crafting
+    - SES sending of email
+
+- Reporting  (Ernest)
+    - EventBridge to QuickSight to generate report
+    - Store report in S3
+
+- Data Archival (Leandro)
+    - EventBridge Monthly checks (15th of every month)
+    - Lambda to filter historial sales data to be archived and transformed (Parquet)
+    - S3 Intelligent buket store > archive rule to put in Glaier after 1 year and subsequently deleted after 5 years
+
+- Monitoring and Alers (Kristin & Aleksandra)
+    - CloudWatch Metrics
+    - SNS ops alerts (Cloud operations falls below certain threshold then send notif etc.)
+
+- Analytics (Implement at a later date)
+    - SPICE
+    - QuickSight
+    - Native email delivery to Staff
+
