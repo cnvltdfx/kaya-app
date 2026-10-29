@@ -105,10 +105,10 @@ resource "aws_iam_role" "order_worker" {
   assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
 }
 
-# Logs + the network interfaces a VPC-attached Lambda needs.
-resource "aws_iam_role_policy_attachment" "order_worker_vpc" {
+# Switch to AWSLambdaVPCAccessExecutionRole when the worker moves into the VPC.
+resource "aws_iam_role_policy_attachment" "order_worker_logs" {
   role       = aws_iam_role.order_worker.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
 data "aws_iam_policy_document" "order_worker" {
@@ -119,21 +119,9 @@ data "aws_iam_policy_document" "order_worker" {
   }
 
   statement {
-    sid       = "ReadDbSecret"
-    actions   = ["secretsmanager:GetSecretValue"]
-    resources = [aws_db_instance.main.master_user_secret[0].secret_arn]
-  }
-
-  statement {
     sid       = "PublishOrderEvents"
     actions   = ["sns:Publish"]
     resources = [aws_sns_topic.order_events.arn]
-  }
-
-  statement {
-    sid       = "UseProjectKey"
-    actions   = ["kms:Decrypt", "kms:GenerateDataKey"]
-    resources = [aws_kms_key.main.arn]
   }
 }
 

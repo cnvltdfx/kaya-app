@@ -1,5 +1,5 @@
 // Order worker (placeholder): triggered by the SQS order queue.
-// Env: DB_HOST, DB_NAME, DB_SECRET_ARN, ORDER_EVENTS_TOPIC_ARN.
+// Env: ORDER_EVENTS_TOPIC_ARN (DB_HOST, DB_NAME, DB_SECRET_ARN once it moves into the VPC).
 export const handler = async (event) => {
   const batchItemFailures = [];
 

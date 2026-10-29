@@ -144,7 +144,13 @@ Back office → Reports, and the daily 00:05 SGT run, upload to the reports buck
 
 ## 9. Order processing (placeholders)
 
-`orders.tf` creates the decoupled order pipeline: an SQS order queue with a dead-letter queue, an order-worker Lambda (in the VPC, can reach the DB), an SNS order-events topic, an email-sender Lambda, and an optional SES sender identity. The Lambda code in `infra/lambdas/` is a stub that only logs; the app doesn't send to the queue yet.
+`orders.tf` creates the decoupled order pipeline: an SQS order queue with a dead-letter queue, an order-worker Lambda, an SNS order-events topic, an email-sender Lambda, and an optional SES sender identity. The Lambda code in `infra/lambdas/` is a stub that only logs; the app doesn't send to the queue yet. It doesn't use the VPC, DB or project KMS key, so it can be applied on its own (see below); the worker moves into the VPC once the DB exists.
+
+Apply just this part:
+
+```powershell
+terraform apply '-target=aws_lambda_event_source_mapping.orders' '-target=aws_sns_topic_subscription.email_sender' '-target=aws_sns_topic_subscription.staff_email' '-target=aws_sesv2_email_identity.sender'
+```
 
 Optional settings in `terraform.tfvars`:
 

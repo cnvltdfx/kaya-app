@@ -1,6 +1,9 @@
 # Decoupled order processing (placeholder wiring; Lambda code in infra/lambdas is stubbed).
-# API -> SQS order queue (+ DLQ) -> order-worker Lambda (VPC, reaches the DB)
+# API -> SQS order queue (+ DLQ) -> order-worker Lambda
 #     -> SNS order-events -> email-sender Lambda -> SES; staff get rejected orders by email.
+# Standalone for now: no VPC, DB or project KMS key, so it can be applied on its own.
+# Once the DB exists, attach the worker to the VPC (app subnet + a SG allowed into the DB)
+# and pass it the DB host, name and secret ARN.
 
 locals {
   order_worker_name = "${var.project_name}-order-worker"
@@ -12,13 +15,13 @@ locals {
 resource "aws_sqs_queue" "orders_dlq" {
   name                      = "${var.project_name}-orders-dlq"
   message_retention_seconds = 1209600 # 14 days
-  kms_master_key_id         = aws_kms_key.main.arn
+  sqs_managed_sse_enabled   = true
 }
 
 resource "aws_sqs_queue" "orders" {
   name                       = "${var.project_name}-orders"
   visibility_timeout_seconds = var.order_worker_timeout * 6
-  kms_master_key_id          = aws_kms_key.main.arn
+  sqs_managed_sse_enabled    = true
 
   redrive_policy = jsonencode({
     deadLetterTargetArn = aws_sqs_queue.orders_dlq.arn
@@ -30,7 +33,7 @@ resource "aws_sqs_queue" "orders" {
 
 resource "aws_sns_topic" "order_events" {
   name              = "${var.project_name}-order-events"
-  kms_master_key_id = aws_kms_key.main.arn
+  kms_master_key_id = "alias/aws/sns"
 }
 
 resource "aws_sns_topic_subscription" "staff_email" {
@@ -73,21 +76,13 @@ resource "aws_lambda_function" "order_worker" {
   timeout          = var.order_worker_timeout
   memory_size      = 256
 
-  vpc_config {
-    subnet_ids         = [aws_subnet.app.id]
-    security_group_ids = [aws_security_group.order_worker.id]
-  }
-
   environment {
     variables = {
-      DB_HOST                = aws_db_instance.main.address
-      DB_NAME                = var.db_name
-      DB_SECRET_ARN          = aws_db_instance.main.master_user_secret[0].secret_arn
       ORDER_EVENTS_TOPIC_ARN = aws_sns_topic.order_events.arn
     }
   }
 
-  depends_on = [aws_cloudwatch_log_group.order_worker, aws_iam_role_policy_attachment.order_worker_vpc]
+  depends_on = [aws_cloudwatch_log_group.order_worker, aws_iam_role_policy_attachment.order_worker_logs]
 }
 
 resource "aws_lambda_event_source_mapping" "orders" {
@@ -95,6 +90,9 @@ resource "aws_lambda_event_source_mapping" "orders" {
   function_name           = aws_lambda_function.order_worker.arn
   batch_size              = 10
   function_response_types = ["ReportBatchItemFailures"]
+
+  # The worker role needs SQS receive permission before the mapping can be created.
+  depends_on = [aws_iam_role_policy.order_worker]
 }
 
 # ---- Email sender: SNS order event -> SES email
@@ -120,7 +118,7 @@ resource "aws_lambda_function" "email_sender" {
     }
   }
 
-  depends_on = [aws_cloudwatch_log_group.email_sender]
+  depends_on = [aws_cloudwatch_log_group.email_sender, aws_iam_role_policy_attachment.email_sender_logs, aws_iam_role_policy.email_sender]
 }
 
 resource "aws_lambda_permission" "email_sender_sns" {
