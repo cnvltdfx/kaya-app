@@ -20,9 +20,23 @@ Data also resets whenever the container restarts or the instance is replaced: th
 ## 1. Install the tools
 
 - An AWS account, and the **AWS CLI v2** signed in with admin rights (`aws configure` or `aws configure sso`). Check with `aws sts get-caller-identity`.
-- **Terraform** 1.5 or later.
+- **Terraform** 1.10 or later.
 - **Docker** (Docker Desktop on Windows/Mac).
 - Optional: the **Session Manager plugin** for the AWS CLI, for shell access from your terminal. Without it, use the AWS console instead (step 6).
+
+## Shared state
+
+Terraform state lives in the S3 bucket `kool-kaya-kitchen-tfstate-634993259271` (Kaya account, `ap-southeast-1`), set in `backend.tf`. Everyone on the team applies against that one state, and a lock file in the bucket stops two applies running at once. Don't keep a local `terraform.tfstate`.
+
+Sign in to the Kaya account before any Terraform command, then check you're in the right account:
+
+```powershell
+$env:AWS_PROFILE = "kaya"
+aws sts get-caller-identity   # Account should be 634993259271
+terraform init
+```
+
+The bucket was created by hand (versioned, encrypted, public access blocked, HTTPS only) because Terraform can't store its state in a bucket it creates itself. Don't delete it with the rest of the stack.
 
 ## 2. Configure
 
