@@ -142,6 +142,28 @@ aws autoscaling start-instance-refresh --auto-scaling-group-name kool-kaya-kitch
 
 Back office → Reports, and the daily 00:05 SGT run, upload to the reports bucket (`terraform output reports_bucket`) under `reports/`. They're encrypted with the project KMS key.
 
+## 9. Order processing (placeholders)
+
+`orders.tf` creates the decoupled order pipeline: an SQS order queue with a dead-letter queue, an order-worker Lambda (in the VPC, can reach the DB), an SNS order-events topic, an email-sender Lambda, and an optional SES sender identity. The Lambda code in `infra/lambdas/` is a stub that only logs; the app doesn't send to the queue yet.
+
+Optional settings in `terraform.tfvars`:
+
+```hcl
+ses_from_address  = "orders@example.com"  # SES emails a verification link to this address
+staff_alert_email = "staff@example.com"   # SNS emails a subscription confirmation; click it
+```
+
+New SES accounts are in the **sandbox**: they can only send to verified addresses until you request production access in the SES console.
+
+Smoke test after `terraform apply`:
+
+```sh
+aws sqs send-message --queue-url "$(terraform output -raw order_queue_url)" --message-body '{"orderId":"KK100001"}'
+aws logs tail /aws/lambda/kool-kaya-kitchen-order-worker --since 5m
+aws sns publish --topic-arn "$(terraform output -raw order_events_topic_arn)" --message '{"orderId":"KK100001","status":"confirmed"}'
+aws logs tail /aws/lambda/kool-kaya-kitchen-email-sender --since 5m
+```
+
 ## Troubleshooting
 
 | Symptom | Likely cause |

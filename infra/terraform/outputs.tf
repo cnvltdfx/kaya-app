@@ -44,3 +44,19 @@ output "kms_key_arn" {
 output "vpc_id" {
   value = aws_vpc.main.id
 }
+
+output "order_queue_url" {
+  value = aws_sqs_queue.orders.url
+}
+
+output "order_events_topic_arn" {
+  value = aws_sns_topic.order_events.arn
+}
+
+output "order_worker_function" {
+  value = aws_lambda_function.order_worker.function_name
+}
+
+output "email_sender_function" {
+  value = aws_lambda_function.email_sender.function_name
+}

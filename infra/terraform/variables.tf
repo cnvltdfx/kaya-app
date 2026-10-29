@@ -181,3 +181,23 @@ variable "reports_bucket_force_destroy" {
   type        = bool
   default     = false
 }
+
+# ---- Order processing
+
+variable "order_worker_timeout" {
+  description = "Order worker Lambda timeout in seconds (the queue's visibility timeout is 6x this)."
+  type        = number
+  default     = 30
+}
+
+variable "ses_from_address" {
+  description = "Sender address for order emails, verified as an SES identity. Null = no identity created."
+  type        = string
+  default     = null
+}
+
+variable "staff_alert_email" {
+  description = "Staff address subscribed to rejected-order events. Null = no subscription. The address must confirm via the email SNS sends."
+  type        = string
+  default     = null
+}

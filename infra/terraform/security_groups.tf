@@ -97,3 +97,28 @@ resource "aws_vpc_security_group_ingress_rule" "db_from_app" {
   to_port                      = 3306
   referenced_security_group_id = aws_security_group.app.id
 }
+
+resource "aws_security_group" "order_worker" {
+  name        = "${var.project_name}-order-worker"
+  description = "Order worker Lambda"
+  vpc_id      = aws_vpc.main.id
+
+  tags = { Name = "${var.project_name}-order-worker-sg" }
+}
+
+# Outbound HTTPS via NAT for SQS, SNS, Secrets Manager and KMS, plus MySQL to the DB.
+resource "aws_vpc_security_group_egress_rule" "order_worker_all" {
+  security_group_id = aws_security_group.order_worker.id
+  description       = "All outbound"
+  ip_protocol       = "-1"
+  cidr_ipv4         = "0.0.0.0/0"
+}
+
+resource "aws_vpc_security_group_ingress_rule" "db_from_order_worker" {
+  security_group_id            = aws_security_group.db.id
+  description                  = "MySQL from the order worker Lambda"
+  ip_protocol                  = "tcp"
+  from_port                    = 3306
+  to_port                      = 3306
+  referenced_security_group_id = aws_security_group.order_worker.id
+}

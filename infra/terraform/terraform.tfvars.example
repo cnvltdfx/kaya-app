@@ -17,3 +17,7 @@ scheduled_scaling_actions = {
 
 # acm_certificate_arn        = "arn:aws:acm:ap-southeast-1:123456789012:certificate/..."
 # restrict_alb_to_cloudfront = true
+
+# Order processing
+# ses_from_address  = "orders@example.com"
+# staff_alert_email = "staff@example.com"
