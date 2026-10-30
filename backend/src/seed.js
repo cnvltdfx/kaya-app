@@ -11,7 +11,8 @@ const db = require('./lib/db');
 const { hashPassword } = require('./lib/security');
 const { convert, MARKETS } = require('./lib/markets');
 
-const IMG_DIR = path.join(__dirname, '..', 'public', 'img', 'products');
+// Product art is committed in the frontend; `npm run images` regenerates it there.
+const IMG_DIR = process.env.PRODUCT_IMG_DIR || path.join(__dirname, '..', '..', 'frontend', 'img', 'products');
 
 const PRODUCTS = [
   { slug: 'classic-pandan', name: 'Classic Pandan Kaya', size: '250g', price: 9.9, category: 'classic', stock: 120, jam: '#8fae3c', jam2: '#b9c95a', lid: '#e9dcc0', featured: true,
@@ -81,10 +82,8 @@ function seed({ reset = false } = {}) {
   const products = db.table('products');
   if (products.all().length) return false;
 
-  fs.mkdirSync(IMG_DIR, { recursive: true });
   const now = Date.now();
   for (const p of PRODUCTS) {
-    fs.writeFileSync(path.join(IMG_DIR, `${p.slug}.svg`), jarSvg(p));
     products.insert({
       id: `prd_${p.slug}`,
       slug: p.slug,
@@ -180,9 +179,19 @@ function seed({ reset = false } = {}) {
   return true;
 }
 
-module.exports = { seed };
+function writeProductImages(dir = IMG_DIR) {
+  fs.mkdirSync(dir, { recursive: true });
+  for (const p of PRODUCTS) fs.writeFileSync(path.join(dir, `${p.slug}.svg`), jarSvg(p));
+  return dir;
+}
+
+module.exports = { seed, writeProductImages };
 
 if (require.main === module) {
-  seed({ reset: process.argv.includes('--reset') });
-  console.log('Seeded database at', db.DB_FILE);
+  if (process.argv.includes('--images')) {
+    console.log('Wrote product images to', writeProductImages());
+  } else {
+    seed({ reset: process.argv.includes('--reset') });
+    console.log('Seeded database at', db.DB_FILE);
+  }
 }

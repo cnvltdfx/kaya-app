@@ -67,6 +67,25 @@ function securityHeaders(_req, res, next) {
   next();
 }
 
+// CORS for a frontend hosted on another origin (e.g. S3/CloudFront). CORS_ORIGINS is a
+// comma-separated allowlist; unset means same-origin only.
+const CORS_ORIGINS = (process.env.CORS_ORIGINS || '').split(',').map((o) => o.trim()).filter(Boolean);
+function cors(req, res, next) {
+  const origin = req.get('origin');
+  if (origin && (CORS_ORIGINS.includes(origin) || CORS_ORIGINS.includes('*'))) {
+    res.set({
+      'Access-Control-Allow-Origin': origin,
+      'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS',
+      'Access-Control-Allow-Headers': 'authorization,content-type,x-market,idempotency-key',
+      'Access-Control-Expose-Headers': 'content-disposition',
+      'Access-Control-Max-Age': '600',
+      Vary: 'Origin',
+    });
+    if (req.method === 'OPTIONS') return res.sendStatus(204);
+  }
+  next();
+}
+
 // Simple fixed-window rate limiter keyed by IP (stand-in for AWS WAF rate-based rules).
 function rateLimit({ windowMs, max, name }) {
   const hits = new Map();
@@ -95,5 +114,5 @@ function publicUser(u) {
 
 module.exports = {
   hashPassword, verifyPassword, createSession, destroySession,
-  attachUser, requireAuth, requireStaff, securityHeaders, rateLimit, publicUser,
+  attachUser, requireAuth, requireStaff, securityHeaders, cors, rateLimit, publicUser,
 };

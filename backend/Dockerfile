@@ -1,4 +1,6 @@
-# Production image for ECS Fargate / App Runner / EC2.
+# Production API image for ECS Fargate / App Runner / EC2. Build from the repo root:
+#   docker build -t kool-kaya-api backend
+# The storefront is not included; it is deployed separately from ../frontend.
 FROM node:20-alpine
 WORKDIR /app
 ENV NODE_ENV=production PORT=3000
@@ -6,7 +8,6 @@ COPY package*.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY server.js ./
 COPY src ./src
-COPY public ./public
 RUN mkdir -p data reports && chown -R node:node /app
 USER node
 EXPOSE 3000

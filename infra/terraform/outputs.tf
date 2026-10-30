@@ -8,10 +8,10 @@ output "ecr_repository_url" {
 }
 
 output "image_push_commands" {
-  description = "Build and push the app image from the repo root."
+  description = "Build and push the backend API image from the repo root."
   value       = <<-EOT
     aws ecr get-login-password --region ${var.aws_region} | docker login --username AWS --password-stdin ${split("/", aws_ecr_repository.app.repository_url)[0]}
-    docker build -t ${aws_ecr_repository.app.repository_url}:${var.image_tag} .
+    docker build -t ${aws_ecr_repository.app.repository_url}:${var.image_tag} backend
     docker push ${aws_ecr_repository.app.repository_url}:${var.image_tag}
   EOT
 }

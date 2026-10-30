@@ -13,7 +13,7 @@ After upgrading to a paid plan, you can switch back to the diagram's design.
 
 ## Before you start: run one instance
 
-The app still keeps its data in a JSON file inside each container (`src/lib/db.js`), not in the MySQL database. If more than one instance runs, each has its own users, sessions, carts and stock. Logins and MFA then fail at random, because the next request can land on a different instance. **Until the data layer moves to Aurora, run exactly one instance** (step 2 shows how).
+The app still keeps its data in a JSON file inside each container (`backend/src/lib/db.js`), not in the MySQL database. If more than one instance runs, each has its own users, sessions, carts and stock. Logins and MFA then fail at random, because the next request can land on a different instance. **Until the data layer moves to Aurora, run exactly one instance** (step 2 shows how).
 
 Data also resets whenever the container restarts or the instance is replaced: the app seeds fresh demo data on startup. That's fine for a demo.
 
@@ -66,7 +66,7 @@ terraform output -raw image_push_commands
 
 Keep the quotes around `-target=...`. Without them, PowerShell splits the argument at the dot and Terraform fails with `Invalid target "aws_ecr_repository"`.
 
-Go to the **repo root** and run the three commands that were printed: ECR login, `docker build`, `docker push`. On an Apple Silicon Mac, add `--platform linux/amd64` to `docker build`, because the instances are x86.
+Go to the **repo root** and run the three commands that were printed: ECR login, `docker build`, `docker push`. The image is built from `backend/` (the storefront in `frontend/` is not part of it). On an Apple Silicon Mac, add `--platform linux/amd64` to `docker build`, because the instances are x86.
 
 Check that the push worked: `aws ecr list-images --repository-name kool-kaya-kitchen --region ap-southeast-1` should list `latest`. If it's empty, the instances never become healthy.
 
@@ -77,7 +77,7 @@ aws configure export-credentials --format powershell | Out-String | Invoke-Expre
 $reg = "<account-id>.dkr.ecr.ap-southeast-1.amazonaws.com"
 New-Item -ItemType Directory -Force .dockercfg | Out-Null
 [IO.File]::WriteAllText("$PWD\.dockercfg\config.json", "{`"credHelpers`":{`"$reg`":`"ecr-login`"}}")
-docker build -t "$reg/kool-kaya-kitchen:latest" .
+docker build -t "$reg/kool-kaya-kitchen:latest" backend
 docker --config .dockercfg push "$reg/kool-kaya-kitchen:latest"
 ```
 

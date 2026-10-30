@@ -1,7 +1,8 @@
-// Kool Kaya Kitchen — API gateway + web frontend.
+// Kool Kaya Kitchen — API gateway.
 // Each /api/<service> router is an independently deployable module (catalog, auth, cart,
 // orders, payments, admin/reports). Locally they run in one process; in AWS each can run
 // as its own ECS Fargate service / Lambda behind an Application Load Balancer or API Gateway.
+const fs = require('fs');
 const path = require('path');
 const express = require('express');
 const db = require('./src/lib/db');
@@ -11,11 +12,15 @@ const { seed } = require('./src/seed');
 const reports = require('./src/services/reports');
 
 const PORT = Number(process.env.PORT || 3000);
+// The storefront lives in ../frontend and is deployed separately (S3 + CloudFront). For local
+// dev the API also serves it when that directory is present; set FRONTEND_DIR='' to disable.
+const FRONTEND_DIR = process.env.FRONTEND_DIR ?? path.join(__dirname, '..', 'frontend');
 const app = express();
 app.set('trust proxy', 1);
 app.disable('x-powered-by');
 
 app.use(sec.securityHeaders);
+app.use(sec.cors);
 app.use(express.json({ limit: '100kb' }));
 app.use(sec.attachUser);
 app.use(obs.middleware);
@@ -39,8 +44,12 @@ app.use('/api/payments', require('./src/services/payments'));
 app.use('/api/admin', require('./src/services/admin'));
 app.use('/api', (_req, res) => res.status(404).json({ error: 'Not found.' }));
 
-app.use(express.static(path.join(__dirname, 'public'), { maxAge: process.env.NODE_ENV === 'production' ? '1h' : 0, index: 'index.html' }));
-app.get('*', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+if (FRONTEND_DIR && fs.existsSync(path.join(FRONTEND_DIR, 'index.html'))) {
+  app.use(express.static(FRONTEND_DIR, { maxAge: process.env.NODE_ENV === 'production' ? '1h' : 0, index: 'index.html' }));
+  app.get('*', (_req, res) => res.sendFile(path.join(FRONTEND_DIR, 'index.html')));
+} else {
+  app.use((_req, res) => res.status(404).json({ error: 'Not found.' }));
+}
 
 // eslint-disable-next-line no-unused-vars
 app.use((err, req, res, _next) => {

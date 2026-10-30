@@ -245,7 +245,7 @@
     }));
     el.querySelectorAll('[data-dl]').forEach((b) => (b.onclick = async () => {
       try {
-        const res = await fetch(`/api/admin/reports/${b.dataset.dl}/download`, { headers: { authorization: `Bearer ${S.token}` } });
+        const res = await fetch(`${window.KK.apiBase}/api/admin/reports/${b.dataset.dl}/download`, { headers: { authorization: `Bearer ${S.token}` } });
         if (!res.ok) throw new Error('Download failed');
         const blob = await res.blob();
         const name = (res.headers.get('content-disposition') || '').match(/filename="(.+)"/)?.[1] || 'report.csv';
@@ -282,7 +282,7 @@
       document.getElementById('gen-traffic').onclick = async () => {
         const markets = ['SG', 'SG', 'SG', 'SG', 'SG', 'SG', 'SG', 'SG', 'MY', 'TH', 'HK'];
         const paths = ['/api/catalog/products', '/api/catalog/products?q=pandan', '/api/catalog/products/classic-pandan', '/api/catalog/promotions', '/api/catalog/recommendations'];
-        await Promise.all(Array.from({ length: 60 }, (_, i) => fetch(paths[i % paths.length], { headers: { 'x-market': markets[i % markets.length] } })));
+        await Promise.all(Array.from({ length: 60 }, (_, i) => fetch(window.KK.apiBase + paths[i % paths.length], { headers: { 'x-market': markets[i % markets.length] } })));
         toast('Sent 60 requests across markets', 'ok');
         draw();
       };

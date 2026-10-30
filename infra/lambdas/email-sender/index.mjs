@@ -5,7 +5,7 @@ export const handler = async (event) => {
     const orderEvent = JSON.parse(record.Sns.Message);
     console.log(JSON.stringify({ msg: 'order_event.received', messageId: record.Sns.MessageId, orderEvent }));
 
-    // TODO: build the subject/body per status (templates in src/services/notifications.js notifyOrder).
+    // TODO: build the subject/body per status (templates in backend/src/services/notifications.js notifyOrder).
     // TODO: send with SES (SendEmailCommand from @aws-sdk/client-sesv2) from SES_FROM_ADDRESS.
   }
 };

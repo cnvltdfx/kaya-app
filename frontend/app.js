@@ -70,11 +70,14 @@
     setTimeout(() => el.remove(), 3500);
   }
 
+  // Backend origin; empty means same origin. Set per environment in config.js.
+  const apiBase = ((window.KK_CONFIG && window.KK_CONFIG.apiBase) || '').replace(/\/+$/, '');
+
   async function api(method, path, body, extraHeaders = {}) {
     const headers = { 'x-market': S.market, ...extraHeaders };
     if (S.token) headers.authorization = `Bearer ${S.token}`;
     if (body !== undefined) headers['content-type'] = 'application/json';
-    const res = await fetch(path, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined });
+    const res = await fetch(apiBase + path, { method, headers, body: body !== undefined ? JSON.stringify(body) : undefined });
     const data = res.headers.get('content-type')?.includes('json') ? await res.json() : await res.text();
     if (res.status === 401 && S.token && !path.startsWith('/api/auth/login') && !path.startsWith('/api/auth/mfa')) {
       setSession(null, null);
@@ -859,7 +862,7 @@
   document.getElementById('year').textContent = new Date().getFullYear();
 
   // Expose helpers for admin.js
-  window.KK = { S, api, esc, money, fmtDate, toast, statusPill, route, t };
+  window.KK = { S, api, apiBase, esc, money, fmtDate, toast, statusPill, route, t };
 
   (async function boot() {
     try {

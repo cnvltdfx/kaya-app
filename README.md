@@ -2,21 +2,35 @@
 
 IS458 Cloud Management & Engineering · G1T2 · Theme: **Online Shopping System**
 
-A working online store for an artisanal kaya distributor based in Singapore. It sells to four Asia-Pacific markets: Singapore (~80% of customers), Malaysia, Thailand and Hong Kong. The app is built as separate service modules so each one maps directly onto an AWS resource (see [AWS mapping](#aws-mapping)).
+A working online store for an artisanal kaya distributor based in Singapore. It sells to four Asia-Pacific markets: Singapore (~80% of customers), Malaysia, Thailand and Hong Kong. The code is split into a static **frontend** (`frontend/`, deployed to S3 + CloudFront) and a **backend** API (`backend/`, a Docker image on EC2/ECS behind the ALB). The backend is built as separate service modules so each one maps directly onto an AWS resource (see [AWS mapping](#aws-mapping)).
 
 ## Run it
 
 Requires Node.js 20+.
 
 ```bash
+cd backend
 npm install
 npm start            # http://localhost:3000  (seeds demo data on first run)
 npm test             # 10 end-to-end API tests
 npm run seed         # wipe and reseed the local database
 npm run report       # generate sales + inventory reports from the CLI (scheduled-task entry point)
+npm run images       # regenerate the product SVGs in frontend/img/products
 ```
 
-To use a `.env` file: `cp .env.example .env`, then `node --env-file=.env server.js`.
+For local development the backend also serves `../frontend`, so the whole store runs from one port. Set `FRONTEND_DIR=` (empty) to run it as a pure API.
+
+To use a `.env` file: `cp backend/.env.example backend/.env`, then `node --env-file=.env server.js` from `backend/`.
+
+### Running the frontend separately
+
+`frontend/` is plain static files with no build step. Point it at the API in `frontend/config.js`:
+
+```js
+window.KK_CONFIG = { apiBase: 'http://localhost:3000' };   // '' = same origin
+```
+
+then serve it with any static server (e.g. `npx serve frontend -l 8080`) and start the backend with `CORS_ORIGINS=http://localhost:8080 npm start`. In AWS, leave `apiBase` empty and have CloudFront route `/api/*` to the ALB, so no CORS is needed.
 
 ### Demo accounts (development only)
 
@@ -62,9 +76,9 @@ In development, the MFA code and password-reset link are shown on screen. They'r
 
 | App module | Local implementation | AWS target |
 |---|---|---|
-| Web frontend (`public/`) | Express static | S3 + CloudFront (edge caching for MY/TH/HK latency) |
-| API services (`src/services/*`) | One Express process, one router per service | ECS Fargate services behind an ALB (multi-AZ), auto-scaling on CPU/request count; scheduled scale-up before 11.11 |
-| Data (`src/lib/db.js`) | JSON document store | DynamoDB (carts, sessions) + RDS Multi-AZ (orders, products), with a cross-region replica for DR |
+| Web frontend (`frontend/`) | Express static (local dev only) | S3 + CloudFront (edge caching for MY/TH/HK latency) |
+| API services (`backend/src/services/*`) | One Express process, one router per service | ECS Fargate services behind an ALB (multi-AZ), auto-scaling on CPU/request count; scheduled scale-up before 11.11 |
+| Data (`backend/src/lib/db.js`) | JSON document store | DynamoDB (carts, sessions) + RDS Multi-AZ (orders, products), with a cross-region replica for DR |
 | Auth (`auth.js`) | scrypt + session tokens + email MFA | Amazon Cognito (hosted UI, Google/Apple IdPs, MFA) |
 | Payments (`payments.js`) | Simulated gateway | Stripe/Adyen; keys in Secrets Manager |
 | Notifications (`notifications.js`) | Outbox table | SQS → Lambda → SES (email) / SNS (SMS) |
@@ -75,25 +89,34 @@ In development, the MFA code and password-reset link are shown on screen. They'r
 ### Pushing reports to S3
 
 ```bash
-S3_BUCKET=kool-kaya-reports AWS_REGION=ap-southeast-1 npm start
+cd backend && S3_BUCKET=kool-kaya-reports AWS_REGION=ap-southeast-1 npm start
 ```
 
 Credentials come from the standard AWS chain: the ECS task role in AWS, or `AWS_PROFILE` / env vars locally. The task role needs `s3:PutObject` and `s3:GetObject` on `arn:aws:s3:::kool-kaya-reports/reports/*`. Objects are written to `reports/{sales|inventory}/YYYY/MM/DD/…csv|json`.
 
 ### Container
 
+The image contains only the backend API.
+
 ```bash
-docker build -t kool-kaya .
-docker run -p 3000:3000 -e S3_BUCKET=… kool-kaya
+docker build -t kool-kaya-api backend
+docker run -p 3000:3000 -e S3_BUCKET=… kool-kaya-api
 ```
 
 ## Project structure
 
 ```
-server.js                 API gateway + static hosting + health checks
-src/lib/                  db, markets/FX, pricing, security, observability
-src/services/             catalog, auth, cart, orders, payments, notifications, reports, admin
-src/seed.js               products, demo users, 160 historical orders (80% SG)
-public/                   storefront SPA (app.js), back office (admin.js), i18n, styles
-test/api.test.js          end-to-end API tests
+frontend/                         static storefront → S3 + CloudFront
+  index.html, styles.css
+  config.js                       API base URL (set per environment)
+  app.js, admin.js, i18n.js       storefront SPA, back office, translations
+  img/                            logo + product art
+backend/                          API → Docker image (EC2/ECS behind the ALB)
+  server.js                       API gateway, health checks, CORS, dev static hosting
+  src/lib/                        db, markets/FX, pricing, security, observability
+  src/services/                   catalog, auth, cart, orders, payments, notifications, reports, admin
+  src/seed.js                     products, demo users, 160 historical orders (80% SG)
+  test/api.test.js                end-to-end API tests
+  Dockerfile, .env.example
+infra/                            Terraform + Lambda functions
 ```
