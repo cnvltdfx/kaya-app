@@ -5,8 +5,13 @@
 // KMS_KEY_ID is set, otherwise SSE-S3. Without S3_BUCKET, reports are written to ./reports
 // using the same key layout, so the app works fully offline.
 //
-// A scheduler generates the daily report at 00:05 Singapore time. In AWS this would be an
-// EventBridge Scheduler rule invoking this as a Lambda / ECS task (`npm run report`).
+// Locally, an in-process timer generates the daily reports at 00:05 Singapore time. In AWS,
+// EventBridge Scheduler invokes the report-generator Lambda, which calls runReport through the
+// private report port in server.js instead.
+//
+// Every sales report also rewrites reports/quicksight/sales.csv: all paid orders to date, in the
+// same columns. The QuickSight dataset reads only that file, so overlapping daily, weekly and
+// manual reports never double-count.
 const fs = require('fs');
 const path = require('path');
 const { table, id } = require('../lib/db');
@@ -16,6 +21,7 @@ const { log, raiseAlert } = require('../lib/observability');
 const LOCAL_ROOT = process.env.REPORTS_ROOT || path.join(__dirname, '..', '..'); // keys start with reports/
 const BUCKET = process.env.S3_BUCKET || '';
 const REGION = process.env.AWS_REGION || 'ap-southeast-1';
+const QUICKSIGHT_FEED_KEY = 'reports/quicksight/sales.csv';
 
 let s3 = null;
 function s3Client() {
@@ -102,6 +108,7 @@ async function runReport({ type = 'sales', days = 1, trigger = 'manual', by = nu
   try {
     const csvLoc = await putObject(`${base}.csv`, csv, 'text/csv');
     const jsonLoc = await putObject(`${base}.json`, JSON.stringify(summary, null, 2), 'application/json');
+    if (type === 'sales') await putObject(QUICKSIGHT_FEED_KEY, salesReport({ from: 0, to }).csv, 'text/csv');
     const rec = table('reports').insert({
       id: id('rpt'), type, days: type === 'inventory' ? null : Number(days) || 1, trigger, by,
       storage: BUCKET ? 's3' : 'local', key: `${base}.csv`, location: csvLoc, summaryLocation: jsonLoc,

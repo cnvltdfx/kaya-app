@@ -59,7 +59,28 @@ app.use((err, req, res, _next) => {
 });
 
 if (seed()) obs.log('info', 'database.seeded', { file: db.DB_FILE });
-reports.startScheduler();
+
+// Private report port for the scheduled report Lambda (infra/lambdas/report-generator). The ALB
+// doesn't route to it; only the Lambda's security group can reach it. When it's set, EventBridge
+// Scheduler owns the report schedule, so the in-process timer stays off.
+const REPORTS_PORT = Number(process.env.REPORTS_PORT || 0);
+let reportServer = null;
+if (REPORTS_PORT) {
+  const reportApp = express();
+  reportApp.use(express.json({ limit: '1kb' }));
+  reportApp.post('/reports', async (req, res) => {
+    const type = req.body?.type === 'inventory' ? 'inventory' : 'sales';
+    try {
+      const report = await reports.runReport({ type, days: req.body?.days, trigger: 'scheduled' });
+      res.status(201).json({ report });
+    } catch (e) {
+      res.status(500).json({ error: e.message });
+    }
+  });
+  reportServer = reportApp.listen(REPORTS_PORT, () => obs.log('info', 'report.port_started', { port: REPORTS_PORT }));
+} else {
+  reports.startScheduler();
+}
 
 const server = app.listen(PORT, () => {
   obs.log('info', 'server.started', { url: `http://localhost:${PORT}`, env: process.env.NODE_ENV || 'development' });
@@ -67,6 +88,7 @@ const server = app.listen(PORT, () => {
 
 function shutdown(sig) {
   obs.log('info', 'server.stopping', { signal: sig });
+  reportServer?.close();
   server.close(() => {
     db.flush();
     process.exit(0);
@@ -76,4 +98,4 @@ function shutdown(sig) {
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
 
-module.exports = { app, server };
+module.exports = { app, server, reportServer };

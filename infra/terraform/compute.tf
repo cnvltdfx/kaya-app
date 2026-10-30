@@ -45,6 +45,7 @@ resource "aws_launch_template" "app" {
     registry      = split("/", aws_ecr_repository.app.repository_url)[0]
     image         = "${aws_ecr_repository.app.repository_url}:${var.image_tag}"
     app_port      = var.app_port
+    reports_port  = local.reports_port
     s3_bucket     = aws_s3_bucket.reports.bucket
     kms_key_id    = aws_kms_key.main.arn
     db_host       = aws_db_instance.main.address

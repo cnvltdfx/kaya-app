@@ -60,3 +60,7 @@ output "order_worker_function" {
 output "email_sender_function" {
   value = aws_lambda_function.email_sender.function_name
 }
+
+output "report_generator_function" {
+  value = aws_lambda_function.report_generator.function_name
+}

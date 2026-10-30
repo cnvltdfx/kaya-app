@@ -154,3 +154,115 @@ resource "aws_iam_role_policy" "email_sender" {
   role   = aws_iam_role.email_sender.id
   policy = data.aws_iam_policy_document.email_sender.json
 }
+
+# ---- Reporting
+
+resource "aws_iam_role" "report_generator" {
+  name               = "${var.project_name}-report-generator-role"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
+}
+
+# Logs, plus the network interfaces a VPC-attached function needs.
+resource "aws_iam_role_policy_attachment" "report_generator_vpc" {
+  role       = aws_iam_role.report_generator.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
+data "aws_iam_policy_document" "report_generator" {
+  # Describe calls don't support resource-level permissions.
+  statement {
+    sid       = "FindApiServer"
+    actions   = ["autoscaling:DescribeAutoScalingGroups", "ec2:DescribeInstances"]
+    resources = ["*"]
+  }
+}
+
+resource "aws_iam_role_policy" "report_generator" {
+  name   = "report-generator-access"
+  role   = aws_iam_role.report_generator.id
+  policy = data.aws_iam_policy_document.report_generator.json
+}
+
+data "aws_iam_policy_document" "scheduler_assume" {
+  statement {
+    actions = ["sts:AssumeRole"]
+
+    principals {
+      type        = "Service"
+      identifiers = ["scheduler.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [data.aws_caller_identity.current.account_id]
+    }
+  }
+}
+
+resource "aws_iam_role" "report_scheduler" {
+  name               = "${var.project_name}-report-scheduler-role"
+  assume_role_policy = data.aws_iam_policy_document.scheduler_assume.json
+}
+
+data "aws_iam_policy_document" "report_scheduler" {
+  statement {
+    sid       = "InvokeReportGenerator"
+    actions   = ["lambda:InvokeFunction"]
+    resources = [aws_lambda_function.report_generator.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "report_scheduler" {
+  name   = "report-scheduler-access"
+  role   = aws_iam_role.report_scheduler.id
+  policy = data.aws_iam_policy_document.report_scheduler.json
+}
+
+# QuickSight reads the feed with this role instead of its account-wide service role, which has
+# no access to the project KMS key.
+data "aws_iam_policy_document" "quicksight_assume" {
+  statement {
+    actions = ["sts:AssumeRole"]
+
+    principals {
+      type        = "Service"
+      identifiers = ["quicksight.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "quicksight_reports" {
+  count = local.quicksight_enabled ? 1 : 0
+
+  name               = "${var.project_name}-quicksight-reports-role"
+  assume_role_policy = data.aws_iam_policy_document.quicksight_assume.json
+}
+
+data "aws_iam_policy_document" "quicksight_reports" {
+  statement {
+    sid       = "ListReportsBucket"
+    actions   = ["s3:ListBucket"]
+    resources = [aws_s3_bucket.reports.arn]
+  }
+
+  statement {
+    sid       = "ReadQuickSightFeed"
+    actions   = ["s3:GetObject", "s3:GetObjectVersion"]
+    resources = ["${aws_s3_bucket.reports.arn}/reports/quicksight/*"]
+  }
+
+  statement {
+    sid       = "DecryptReports"
+    actions   = ["kms:Decrypt"]
+    resources = [aws_kms_key.main.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "quicksight_reports" {
+  count = local.quicksight_enabled ? 1 : 0
+
+  name   = "quicksight-reports-access"
+  role   = aws_iam_role.quicksight_reports[0].id
+  policy = data.aws_iam_policy_document.quicksight_reports.json
+}
