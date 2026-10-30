@@ -21,3 +21,7 @@ scheduled_scaling_actions = {
 # Order processing
 # ses_from_address  = "orders@example.com"
 # staff_alert_email = "staff@example.com"
+
+# Monitoring (monitoring.tf)
+# Each address gets an "AWS Notification - Subscription Confirmation" email: click Confirm.
+# alert_emails = ["staff1@example.com", "staff2@example.com"]
