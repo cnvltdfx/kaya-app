@@ -12,7 +12,7 @@ Requires Node.js 20+.
 cd backend
 npm install
 npm start            # http://localhost:3000  (seeds demo data on first run)
-npm test             # 10 end-to-end API tests
+npm test             # 11 end-to-end API tests
 npm run seed         # wipe and reseed the local database
 npm run report       # generate sales + inventory reports from the CLI (scheduled-task entry point)
 npm run images       # regenerate the product SVGs in frontend/img/products

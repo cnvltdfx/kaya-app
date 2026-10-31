@@ -10,8 +10,10 @@ process.env.DATA_DIR = tmp;
 process.env.LOG_SILENT = '1';
 process.env.REPORTS_ROOT = tmp;
 process.env.PORT = '3457';
+process.env.REPORTS_PORT = '3458';
 const BASE = 'http://localhost:3457';
 let server;
+let reportServer;
 
 async function call(method, url, { body, token, market = 'SG', headers = {} } = {}) {
   const res = await fetch(BASE + url, {
@@ -33,11 +35,12 @@ const card = { method: 'card', card: { name: 'Test', number: '4242424242424242',
 const addr = { line1: '1 Test St', city: 'Singapore', postcode: '111111' };
 
 before(async () => {
-  ({ server } = require('../server'));
-  await new Promise((r) => (server.listening ? r() : server.once('listening', r)));
+  ({ server, reportServer } = require('../server'));
+  for (const s of [server, reportServer]) await new Promise((r) => (s.listening ? r() : s.once('listening', r)));
 });
 after(() => {
   server.close();
+  reportServer.close();
   require('../src/lib/db').flush();
   fs.rmSync(tmp, { recursive: true, force: true });
   setTimeout(() => process.exit(0), 100).unref();
@@ -134,4 +137,16 @@ test('staff can ship an order, run a report and see metrics', async () => {
   const m = await call('GET', '/api/admin/metrics', { token });
   assert.ok(m.data.overall.requests > 0);
   assert.ok(m.data.byMarket.SG);
+});
+
+test('private report port runs scheduled reports and refreshes the QuickSight feed', async () => {
+  const res = await fetch('http://localhost:3458/reports', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ type: 'sales', days: 1 }) });
+  assert.equal(res.status, 201);
+  const { report } = await res.json();
+  assert.equal(report.trigger, 'scheduled');
+  assert.ok(report.location.startsWith('local://reports/sales/'));
+  const feed = fs.readFileSync(path.join(tmp, 'reports/quicksight/sales.csv'), 'utf8').trim().split('\n');
+  assert.ok(feed[0].startsWith('order_id,created_at_sgt,'));
+  assert.ok(feed.length > 160); // every paid order line, not just the last day
+  assert.equal((await call('POST', '/reports', { body: { type: 'sales' } })).status, 404); // not on the public port
 });

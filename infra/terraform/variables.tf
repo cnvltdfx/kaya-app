@@ -201,3 +201,11 @@ variable "staff_alert_email" {
   type        = string
   default     = null
 }
+
+# ---- Reporting
+
+variable "quicksight_user_arn" {
+  description = "QuickSight user or group that owns the sales data source and dataset, e.g. arn:aws:quicksight:<identity-region>:<account>:user/default/<name>. Null = no QuickSight resources. Enable QuickSight and generate the first report before setting it."
+  type        = string
+  default     = null
+}

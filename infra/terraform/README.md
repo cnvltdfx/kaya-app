@@ -140,7 +140,55 @@ aws autoscaling start-instance-refresh --auto-scaling-group-name kool-kaya-kitch
 
 ## 8. Reports
 
-Back office → Reports, and the daily 00:05 SGT run, upload to the reports bucket (`terraform output reports_bucket`) under `reports/`. They're encrypted with the project KMS key.
+`reporting.tf` builds the reporting pipeline from the architecture diagram:
+
+EventBridge Scheduler → report-generator Lambda (in the VPC) → API server → S3 reports bucket → QuickSight
+
+- **Schedules** (Singapore time):
+  - Daily at 00:05: sales for the last day, plus inventory.
+  - Mondays at 00:10: sales for the last 7 days.
+- **Report generator** (`infra/lambdas/report-generator`): the sales data still lives inside the API server (`backend/src/lib/db.js`), not in the database.
+  - The Lambda finds a healthy in-service instance and calls its private report port (3001). The ALB never routes to that port; only the Lambda's security group can reach it.
+  - The app builds the CSV and JSON summary and uploads them to the reports bucket (`terraform output reports_bucket`) under `reports/`, encrypted with the project KMS key.
+  - Once the data moves to Aurora, the Lambda should query it directly instead.
+- **QuickSight feed:** each sales report also rewrites `reports/quicksight/sales.csv` with every paid order to date. The QuickSight dataset reads only that file, so overlapping daily, weekly and manual reports aren't double-counted. SPICE refreshes it daily at 00:30.
+
+Back office → Reports works as before and lists the scheduled runs too. With more than one instance, the reports cover only the instance the Lambda picked (see "Before you start").
+
+### Deploy the report generator
+
+The report port is new app code, so build and push a new image first (step 3). Then:
+
+```sh
+terraform apply
+```
+
+The apply changes the instances' user data (it opens the report port), so the instance refresh replaces them. Once the new instance is healthy, generate the first reports instead of waiting for 00:05:
+
+```sh
+aws lambda invoke --function-name "$(terraform output -raw report_generator_function)" --cli-binary-format raw-in-base64-out --payload '{"reports":[{"type":"sales","days":1},{"type":"inventory"}]}' build/report-invoke.json
+aws s3 ls "s3://$(terraform output -raw reports_bucket)/reports/" --recursive
+```
+
+### Set up QuickSight
+
+Terraform creates the QuickSight data source, dataset and daily refresh only once `quicksight_user_arn` is set. Until then it skips them, so applies still work in accounts without QuickSight.
+
+1. Enable QuickSight once in the console. You don't need to tick any S3 buckets there, because the data source reads the bucket with its own IAM role.
+2. Generate the first reports (above), so `reports/quicksight/sales.csv` exists. QuickSight checks the file when it creates the data source.
+3. Find your QuickSight user ARN. Use the region you signed up to QuickSight in, which may not be `ap-southeast-1`:
+   ```sh
+   aws quicksight list-users --aws-account-id 634993259271 --namespace default --region <quicksight-region>
+   ```
+4. Add it to `terraform.tfvars` and apply:
+   ```hcl
+   quicksight_user_arn = "arn:aws:quicksight:<quicksight-region>:634993259271:user/default/<name>"
+   ```
+5. Build the dashboard in QuickSight: Datasets → **Kool Kaya sales** → **Create analysis**.
+   - For revenue, sum `line_total_sgd`. Don't sum `order_total_*`, which repeats on every line of an order.
+   - For orders, use a distinct count of `order_id`.
+   - Useful visuals: revenue by `market`, by `created_at_sgt` (aggregated by day), and by `product`.
+   - **Publish** it as a dashboard and share it with staff.
 
 ## 9. Order processing (placeholders)
 
@@ -180,10 +228,13 @@ aws logs tail /aws/lambda/kool-kaya-kitchen-email-sender --since 5m
 | Instances can't pull the image or register with SSM | Check that the NAT instance (`terraform output nat_instance_id`) is running. If it was stopped or replaced, reboot the API instances. |
 | `FreeTierRestrictionError` | A setting exceeds Free plan limits. Paste the error and adjust that variable; for example, `db_backup_retention_days` must stay low. |
 | Logged out or "cart empty" at random | More than one instance is running. See "Before you start". |
+| Report Lambda fails with `No healthy in-service instance` | The API instance isn't healthy yet. Check the ASG and the ALB target health. |
+| Report Lambda fails with `fetch failed` / `ECONNREFUSED` | The instance runs an image without the report port. Push the new image and start an instance refresh (step 7). |
+| QuickSight data source fails to create | `reports/quicksight/sales.csv` doesn't exist yet (generate the first reports), or the new IAM role hadn't propagated. Run `terraform apply` again. |
 
 ## Cost and teardown
 
-These run 24/7: the **ALB**, the **RDS instance**, the **NAT instance**, the API instance(s), and public IPv4 addresses. Most fall under the Free plan's allowances or credits, but the free EC2 hours (750/month) cover only one instance running all month. The NAT instance plus one API instance already use about 1,500 hours, so the extra comes out of your credits. The KMS key (about US$1/month) and Secrets Manager secret (about US$0.40/month) are small extras. Destroy everything when you're not using it.
+These run 24/7: the **ALB**, the **RDS instance**, the **NAT instance**, the API instance(s), and public IPv4 addresses. Most fall under the Free plan's allowances or credits, but the free EC2 hours (750/month) cover only one instance running all month. The NAT instance plus one API instance already use about 1,500 hours, so the extra comes out of your credits. The KMS key (about US$1/month) and Secrets Manager secret (about US$0.40/month) are small extras. QuickSight bills per user from the day it's enabled; cancel the subscription in the QuickSight console when you're done, because `terraform destroy` only removes the dataset and data source. Destroy everything when you're not using it.
 
 ```sh
 # 1. In terraform.tfvars, allow deleting the database and the non-empty bucket:
@@ -197,5 +248,7 @@ terraform apply
 # 3. Destroy
 terraform destroy
 ```
+
+The destroy can pause for up to about 20 minutes while AWS releases the report Lambda's network interfaces in the app subnet; that's normal.
 
 RDS leaves a final snapshot named `kool-kaya-kitchen-db-final`. Delete it in the RDS console if you don't need it, because it costs money and a second destroy fails while a snapshot with that name exists. The KMS key is scheduled for deletion after 30 days.

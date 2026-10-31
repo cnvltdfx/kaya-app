@@ -1,4 +1,4 @@
-# ALB <- internet (or CloudFront only), App <- ALB, DB <- App.
+# ALB <- internet (or CloudFront only), App <- ALB + report Lambda (report port only), DB <- App.
 
 data "aws_ec2_managed_prefix_list" "cloudfront" {
   count = var.restrict_alb_to_cloudfront ? 1 : 0
@@ -51,11 +51,47 @@ resource "aws_vpc_security_group_ingress_rule" "app_from_alb" {
   referenced_security_group_id = aws_security_group.alb.id
 }
 
+resource "aws_vpc_security_group_ingress_rule" "app_from_report_generator" {
+  security_group_id            = aws_security_group.app.id
+  description                  = "Private report port from the report generator Lambda"
+  ip_protocol                  = "tcp"
+  from_port                    = local.reports_port
+  to_port                      = local.reports_port
+  referenced_security_group_id = aws_security_group.report_generator.id
+}
+
 # Outbound HTTPS via NAT for ECR, SSM, S3, Secrets Manager, KMS, and Stripe.
 resource "aws_vpc_security_group_egress_rule" "app_all" {
   security_group_id = aws_security_group.app.id
   description       = "All outbound"
   ip_protocol       = "-1"
+  cidr_ipv4         = "0.0.0.0/0"
+}
+
+resource "aws_security_group" "report_generator" {
+  name        = "${var.project_name}-report-generator"
+  description = "Report generator Lambda"
+  vpc_id      = aws_vpc.main.id
+
+  tags = { Name = "${var.project_name}-report-generator-sg" }
+}
+
+resource "aws_vpc_security_group_egress_rule" "report_generator_to_app" {
+  security_group_id            = aws_security_group.report_generator.id
+  description                  = "To the API servers' private report port"
+  ip_protocol                  = "tcp"
+  from_port                    = local.reports_port
+  to_port                      = local.reports_port
+  referenced_security_group_id = aws_security_group.app.id
+}
+
+# HTTPS via NAT for the Auto Scaling and EC2 APIs.
+resource "aws_vpc_security_group_egress_rule" "report_generator_https" {
+  security_group_id = aws_security_group.report_generator.id
+  description       = "HTTPS to AWS APIs"
+  ip_protocol       = "tcp"
+  from_port         = 443
+  to_port           = 443
   cidr_ipv4         = "0.0.0.0/0"
 }
 

@@ -25,3 +25,6 @@ scheduled_scaling_actions = {
 # Monitoring (monitoring.tf)
 # Each address gets an "AWS Notification - Subscription Confirmation" email: click Confirm.
 # alert_emails = ["staff1@example.com", "staff2@example.com"]
+
+# Reporting: set after enabling QuickSight and generating the first report (README "Reports")
+# quicksight_user_arn = "arn:aws:quicksight:ap-southeast-1:123456789012:user/default/your-name"
