@@ -33,6 +33,18 @@ window.KK_CONFIG = { apiBase: 'http://localhost:3000' };   // '' = same origin
 
 then serve it with any static server (e.g. `npx serve frontend -l 8080`) and start the backend with `CORS_ORIGINS=http://localhost:8080 npm start`. In AWS, leave `apiBase` empty and have CloudFront route `/api/*` to the ALB, so no CORS is needed.
 
+### Trying the storefront against the deployed API
+
+Until CloudFront hosts the frontend, nothing in AWS serves the pages. To use the storefront and back office against the deployed backend, run the local helper from `backend/`. It serves `frontend/` and forwards `/api` to the ALB, so there is no CORS to configure and nothing in AWS changes:
+
+```powershell
+cd backend
+$alb = terraform '-chdir=..\infra\terraform' output -raw alb_dns_name
+node scripts/ui-proxy.js "http://$alb"      # then open http://localhost:8080
+```
+
+Set `PORT` to use another local port. Everything you do goes to the deployed database. The helper is a development tool and isn't part of the Docker image.
+
 All data lives in MySQL (RDS in AWS). See [backend/DATABASE.md](backend/DATABASE.md) for the schema, how migrations and seeding run, and notes for the order worker, reporting and archival.
 
 ### Demo accounts
