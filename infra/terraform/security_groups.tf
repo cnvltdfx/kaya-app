@@ -78,7 +78,7 @@ resource "aws_security_group" "report_generator" {
 
 resource "aws_vpc_security_group_egress_rule" "report_generator_to_app" {
   security_group_id            = aws_security_group.report_generator.id
-  description                  = "To the API servers' private report port"
+  description                  = "To the API server private report port"
   ip_protocol                  = "tcp"
   from_port                    = local.reports_port
   to_port                      = local.reports_port
