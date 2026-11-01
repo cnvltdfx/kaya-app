@@ -1,4 +1,5 @@
-// End-to-end API tests: `npm test`. Runs the server against a throwaway data directory.
+// End-to-end API tests: `npm test`. Needs MySQL (`docker compose up -d`); runs against the
+// kaya_test database (override with TEST_DB_NAME), which is wiped and reseeded first.
 const { test, before, after } = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
@@ -6,7 +7,7 @@ const os = require('os');
 const path = require('path');
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'kk-test-'));
-process.env.DATA_DIR = tmp;
+process.env.DB_NAME = process.env.TEST_DB_NAME || 'kaya_test';
 process.env.LOG_SILENT = '1';
 process.env.REPORTS_ROOT = tmp;
 process.env.PORT = '3457';
@@ -35,13 +36,13 @@ const card = { method: 'card', card: { name: 'Test', number: '4242424242424242',
 const addr = { line1: '1 Test St', city: 'Singapore', postcode: '111111' };
 
 before(async () => {
-  ({ server, reportServer } = require('../server'));
-  for (const s of [server, reportServer]) await new Promise((r) => (s.listening ? r() : s.once('listening', r)));
+  await require('../src/lib/db').reset();
+  ({ server, reportServer } = await require('../server').ready);
 });
-after(() => {
+after(async () => {
   server.close();
   reportServer.close();
-  require('../src/lib/db').flush();
+  await require('../src/lib/db').close();
   fs.rmSync(tmp, { recursive: true, force: true });
   setTimeout(() => process.exit(0), 100).unref();
 });
@@ -68,12 +69,25 @@ test('search, filter and sort', async () => {
   assert.equal(q.data.total, 1);
 });
 
-test('staff login requires MFA', async () => {
-  const r = await call('POST', '/api/auth/login', { body: { email: 'admin@koolkaya.sg', password: 'Admin@1234' } });
+test('login asks for an MFA code once MFA is enabled', async () => {
+  const reg = await call('POST', '/api/auth/register', { body: { name: 'Mfa User', email: 'mfa@example.com', password: 'Secret123' } });
+  await call('PUT', '/api/auth/me', { token: reg.data.token, body: { mfaEnabled: true } });
+  const r = await call('POST', '/api/auth/login', { body: { email: 'mfa@example.com', password: 'Secret123' } });
   assert.equal(r.data.mfaRequired, true);
   assert.equal(r.data.token, undefined);
   const bad = await call('POST', '/api/auth/mfa', { body: { challengeId: r.data.challengeId, code: '000000' } });
   assert.equal(bad.status, 401);
+  const ok = await call('POST', '/api/auth/mfa', { body: { challengeId: r.data.challengeId, code: r.data.devCode } });
+  assert.ok(ok.data.token);
+});
+
+test('sessions and profiles are read back from the database', async () => {
+  const token = await login('demo@koolkaya.sg', 'Demo@1234');
+  const me = await call('GET', '/api/auth/me', { token });
+  assert.equal(me.data.user.email, 'demo@koolkaya.sg');
+  const sec = require('../src/lib/security');
+  const user = await sec.getUser(me.data.user.id);
+  assert.equal(user.address.city, 'Singapore');
 });
 
 test('customers cannot access the back office', async () => {
@@ -121,6 +135,33 @@ test('cannot oversell stock', async () => {
   const token = await login('demo@koolkaya.sg', 'Demo@1234');
   const r = await call('POST', '/api/cart/items', { token, body: { productId: 'prd_festive-hamper', qty: 99 } });
   assert.equal(r.status, 409);
+});
+
+test('concurrent checkouts for the last units: only one succeeds', async () => {
+  const db = require('../src/lib/db');
+  await db.query("UPDATE products SET stock = 2 WHERE id = 'prd_tasting-flight'");
+  const shoppers = [];
+  for (const n of [1, 2, 3]) {
+    const reg = await call('POST', '/api/auth/register', { body: { name: `Racer ${n}`, email: `racer${n}@example.com`, password: 'Secret123' } });
+    await call('POST', '/api/cart/items', { token: reg.data.token, body: { productId: 'prd_tasting-flight', qty: 2 } });
+    shoppers.push(reg.data.token);
+  }
+  const results = await Promise.all(shoppers.map((token) => call('POST', '/api/orders/checkout', { token, body: { fulfilment: 'delivery', address: addr, payment: card } })));
+  assert.deepEqual(results.map((r) => r.status).sort(), [201, 409, 409]);
+  assert.equal((await db.one("SELECT stock FROM products WHERE id = 'prd_tasting-flight'")).stock, 0);
+});
+
+test('customer cancel returns stock once', async () => {
+  const token = await login('demo@koolkaya.sg', 'Demo@1234');
+  const stock = async () => (await call('GET', '/api/catalog/products/kaya-toast-set')).data.product.stock;
+  const start = await stock();
+  await call('POST', '/api/cart/items', { token, body: { productId: 'prd_kaya-toast-set', qty: 1 } });
+  const { data } = await call('POST', '/api/orders/checkout', { token, body: { fulfilment: 'delivery', address: addr, payment: card } });
+  const [a, b] = await Promise.all([1, 2].map(() => call('POST', `/api/orders/${data.order.id}/cancel`, { token })));
+  assert.deepEqual([a.status, b.status].sort(), [200, 409]);
+  assert.equal(await stock(), start);
+  const receipt = await call('GET', `/api/payments/${data.order.id}/receipt`, { token });
+  assert.equal(receipt.data.payment.status, 'refunded');
 });
 
 test('staff can ship an order, run a report and see metrics', async () => {

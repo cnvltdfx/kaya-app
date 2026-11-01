@@ -1,14 +1,19 @@
 // Notification service: email + SMS.
 // Locally, messages are written to an outbox (viewable in the app). In AWS this maps to
 // Amazon SES (email) and Amazon SNS (SMS), triggered asynchronously via an SQS queue.
-const { table, id } = require('../lib/db');
+const db = require('../lib/db');
 const { log } = require('../lib/observability');
 
-function send({ userId = null, channel = 'email', to, subject, body, kind = 'general' }) {
+// Column list for reading notifications back in the API's shape (`recipient` is exposed as `to`).
+const COLUMNS = 'id, user_id, channel, recipient AS `to`, subject, body, kind, status, created_at';
+
+async function send({ userId = null, channel = 'email', to, subject, body, kind = 'general' }) {
   if (!to) return null;
-  const rec = table('notifications').insert({
-    id: id('ntf'), userId, channel, to, subject, body, kind, status: 'sent', createdAt: Date.now(),
-  });
+  const rec = { id: db.id('ntf'), userId, channel, to, subject, body, kind, status: 'sent', createdAt: Date.now() };
+  await db.query(
+    'INSERT INTO notifications (id, user_id, channel, recipient, subject, body, kind, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    [rec.id, rec.userId, rec.channel, rec.to, rec.subject, rec.body, rec.kind, rec.status, db.ts(rec.createdAt)],
+  );
   log('info', 'notification.sent', { channel, kind, to: mask(to) });
   return rec;
 }
@@ -17,7 +22,7 @@ function mask(s) {
   return String(s).replace(/^(.{2}).*(@.*)$/, '$1***$2').replace(/^(\+?\d{3}).*(\d{2})$/, '$1****$2');
 }
 
-function notifyOrder(order, user, event) {
+async function notifyOrder(order, user, event) {
   const msgs = {
     placed: [`Order ${order.id} confirmed`, `Thanks ${user.name}! We've received your order ${order.id} (${order.currency} ${order.total.toFixed(2)}). We'll let you know when it ships.`],
     awaiting_payment: [`Complete payment for ${order.id}`, `Scan the PayNow QR to pay ${order.currency} ${order.total.toFixed(2)} for order ${order.id}.`],
@@ -28,8 +33,8 @@ function notifyOrder(order, user, event) {
     cancelled: [`Order ${order.id} cancelled`, `Order ${order.id} has been cancelled. Any payment will be refunded within 5-7 business days.`],
   };
   const [subject, body] = msgs[event] || [`Order ${order.id} update`, `Your order status is now ${event}.`];
-  send({ userId: user.id, channel: 'email', to: user.email, subject, body, kind: `order.${event}` });
-  if (user.phone) send({ userId: user.id, channel: 'sms', to: user.phone, subject, body: `Kool Kaya: ${subject}.`, kind: `order.${event}` });
+  await send({ userId: user.id, channel: 'email', to: user.email, subject, body, kind: `order.${event}` });
+  if (user.phone) await send({ userId: user.id, channel: 'sms', to: user.phone, subject, body: `Kool Kaya: ${subject}.`, kind: `order.${event}` });
 }
 
-module.exports = { send, notifyOrder };
+module.exports = { send, notifyOrder, COLUMNS };

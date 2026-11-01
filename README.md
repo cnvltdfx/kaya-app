@@ -6,13 +6,14 @@ A working online store for an artisanal kaya distributor based in Singapore. It 
 
 ## Run it
 
-Requires Node.js 20+.
+Requires Node.js 20+ and Docker (for a local MySQL).
 
 ```bash
 cd backend
 npm install
-npm start            # http://localhost:3000  (seeds demo data on first run)
-npm test             # 11 end-to-end API tests
+docker compose up -d # MySQL 8.4 on localhost:3306
+npm start            # http://localhost:3000  (creates the tables and seeds demo data on first run)
+npm test             # 14 end-to-end API tests, against the kaya_test database
 npm run seed         # wipe and reseed the local database
 npm run report       # generate sales + inventory reports from the CLI (scheduled-task entry point)
 npm run images       # regenerate the product SVGs in frontend/img/products
@@ -32,15 +33,17 @@ window.KK_CONFIG = { apiBase: 'http://localhost:3000' };   // '' = same origin
 
 then serve it with any static server (e.g. `npx serve frontend -l 8080`) and start the backend with `CORS_ORIGINS=http://localhost:8080 npm start`. In AWS, leave `apiBase` empty and have CloudFront route `/api/*` to the ALB, so no CORS is needed.
 
-### Demo accounts (development only)
+All data lives in MySQL (RDS in AWS). See [backend/DATABASE.md](backend/DATABASE.md) for the schema, how migrations and seeding run, and notes for the order worker, reporting and archival.
+
+### Demo accounts
 
 | Role | Email | Password | Notes |
 |---|---|---|---|
 | Customer | `demo@koolkaya.sg` | `Demo@1234` | Has order history in SG |
-| Staff | `staff@koolkaya.sg` | `Staff@1234` | MFA required |
-| Admin | `admin@koolkaya.sg` | `Admin@1234` | MFA required |
+| Staff | `staff@koolkaya.sg` | `Staff@1234` | MFA off for now |
+| Admin | `admin@koolkaya.sg` | `Admin@1234` | MFA off for now |
 
-In development, the MFA code and password-reset link are shown on screen. They're also in Back office → Notifications. When `NODE_ENV=production` they're only "sent" by email.
+These are seeded into an empty database, in AWS too. MFA applies to any account that turns it on in Account → Profile. In development, the MFA code and password-reset link are shown on screen. They're also in Back office → Notifications. When `NODE_ENV=production` they're only "sent" by email.
 
 **Test cards** (simulated gateway): `4242 4242 4242 4242` succeeds, `4000 0000 0000 0002` is declined. Use any future expiry and any CVC. PayNow orders show a QR code and a "Simulate bank confirmation" button.
 
@@ -66,9 +69,9 @@ In development, the MFA code and password-reset link are shown on screen. They'r
 | **Reports pushed to S3** | Back office → Reports, a daily 00:05 SGT scheduler, and `npm run report` |
 
 ### Non-functional (as built)
-- **Availability:** stateless app server with `/health` and `/ready` for the load balancer. Recommendations are optional: if that service fails (`RECS_FAIL_RATE=0.5`), the rest of the page still loads.
-- **Consistency:** stock is reserved before payment and released if payment fails. An `Idempotency-Key` header prevents duplicate orders on retry. The server blocks overselling.
-- **Security:** scrypt password hashing; MFA required for staff and admin; role-based access control; rate limiting on auth and checkout (bot mitigation, like AWS WAF rate rules); CSP/HSTS headers; output escaping; audit log; card numbers never stored.
+- **Availability:** stateless app servers (sessions, carts and everything else live in MySQL), so any number can run behind the load balancer; `/health` for the load balancer and `/ready` (checks the database). Recommendations are optional: if that service fails (`RECS_FAIL_RATE=0.5`), the rest of the page still loads.
+- **Consistency:** stock is reserved before payment, with a conditional `UPDATE` so concurrent shoppers on different servers can't oversell, and released if payment fails. An `Idempotency-Key` header (backed by a unique index) prevents duplicate orders on retry. Order status changes only apply from the expected state, so two people can't act on the same order at once.
+- **Security:** scrypt password hashing; session and reset tokens stored only as hashes; optional email MFA (off for the seeded staff accounts for now); role-based access control; rate limiting on auth and checkout (bot mitigation, like AWS WAF rate rules); CSP/HSTS headers; output escaping; audit log; card numbers never stored.
 - **Observability:** structured JSON logs with trace IDs; live p50/p95 latency and error rate **per service and per market**; SLO alerts (latency, error rate), plus low-stock and report-failure alerts.
 - **Localisation:** SGD / MYR / THB / HKD pricing; English, Simplified Chinese, Traditional Chinese, Malay and Thai; dates shown in each market's time zone.
 
@@ -78,7 +81,7 @@ In development, the MFA code and password-reset link are shown on screen. They'r
 |---|---|---|
 | Web frontend (`frontend/`) | Express static (local dev only) | S3 + CloudFront (edge caching for MY/TH/HK latency) |
 | API services (`backend/src/services/*`) | One Express process, one router per service | ECS Fargate services behind an ALB (multi-AZ), auto-scaling on CPU/request count; scheduled scale-up before 11.11 |
-| Data (`backend/src/lib/db.js`) | JSON document store | DynamoDB (carts, sessions) + RDS Multi-AZ (orders, products), with a cross-region replica for DR |
+| Data (`backend/src/lib/db.js`) | MySQL 8 in Docker (`backend/docker-compose.yml`) | RDS for MySQL (Aurora MySQL Serverless v2 after leaving the Free plan); credentials from Secrets Manager. See [DATABASE.md](backend/DATABASE.md) |
 | Auth (`auth.js`) | scrypt + session tokens + email MFA | Amazon Cognito (hosted UI, Google/Apple IdPs, MFA) |
 | Payments (`payments.js`) | Simulated gateway | Stripe/Adyen; keys in Secrets Manager |
 | Notifications (`notifications.js`) | Outbox table | SQS → Lambda → SES (email) / SNS (SMS) |
@@ -115,8 +118,10 @@ backend/                          API → Docker image (EC2/ECS behind the ALB)
   server.js                       API gateway, health checks, CORS, dev static hosting
   src/lib/                        db, markets/FX, pricing, security, observability
   src/services/                   catalog, auth, cart, orders, payments, notifications, reports, admin
+  src/db/migrations/              MySQL schema, applied on startup (see DATABASE.md)
   src/seed.js                     products, demo users, 160 historical orders (80% SG)
   test/api.test.js                end-to-end API tests
   Dockerfile, .env.example
+  docker-compose.yml, db/init.sql local MySQL
 infra/                            Terraform + Lambda functions
 ```

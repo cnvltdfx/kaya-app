@@ -14,7 +14,7 @@
 // manual reports never double-count.
 const fs = require('fs');
 const path = require('path');
-const { table, id } = require('../lib/db');
+const db = require('../lib/db');
 const { MARKETS } = require('../lib/markets');
 const { log, raiseAlert } = require('../lib/observability');
 
@@ -42,8 +42,26 @@ function sgDate(ts) {
   return new Date(ts).toLocaleString('sv-SE', { timeZone: 'Asia/Singapore' }).replace(' ', 'T');
 }
 
-function salesReport({ from, to }) {
-  const orders = table('orders').filter((o) => o.createdAt >= from && o.createdAt < to && o.paymentStatus === 'paid');
+// Paid orders in [from, to) with their items, oldest first.
+async function paidOrders(from, to) {
+  const lines = await db.query(
+    `SELECT o.id, o.created_at, o.market, o.currency, o.status, o.fulfilment, o.payment_method, o.total, o.total_sgd, o.promo_code,
+            i.name, i.qty, i.unit_price, i.unit_price_sgd
+     FROM orders o JOIN order_items i ON i.order_id = o.id
+     WHERE o.payment_status = 'paid' AND o.created_at >= ? AND o.created_at < ?
+     ORDER BY o.created_at, o.id, i.line_no`,
+    [db.ts(from), db.ts(to)],
+  );
+  const orders = new Map();
+  for (const l of lines) {
+    if (!orders.has(l.id)) orders.set(l.id, { ...l, items: [] });
+    orders.get(l.id).items.push({ name: l.name, qty: l.qty, unitPrice: l.unitPrice, unitPriceSgd: l.unitPriceSgd });
+  }
+  return [...orders.values()];
+}
+
+async function salesReport({ from, to }) {
+  const orders = await paidOrders(from, to);
   const rows = [['order_id', 'created_at_sgt', 'market', 'currency', 'status', 'fulfilment', 'payment_method', 'product', 'qty', 'unit_price_local', 'unit_price_sgd', 'order_total_local', 'order_total_sgd', 'promo_code']];
   const byMarket = {};
   const byProduct = {};
@@ -72,9 +90,9 @@ function salesReport({ from, to }) {
   return { csv: toCsv(rows), summary };
 }
 
-function inventoryReport() {
+async function inventoryReport() {
   const rows = [['product_id', 'name', 'category', 'price_sgd', 'sale_pct', 'stock', 'low_stock_threshold', 'status']];
-  const products = table('products').all();
+  const products = await db.query('SELECT * FROM products ORDER BY created_at, id');
   for (const p of products) rows.push([p.id, p.name, p.category, p.price, p.salePct, p.stock, p.lowStockThreshold, p.stock === 0 ? 'OUT_OF_STOCK' : p.stock <= p.lowStockThreshold ? 'LOW' : 'OK']);
   return {
     csv: toCsv(rows),
@@ -101,19 +119,24 @@ async function putObject(key, body, contentType) {
 async function runReport({ type = 'sales', days = 1, trigger = 'manual', by = null } = {}) {
   const to = Date.now();
   const from = to - Math.max(1, Math.min(365, Number(days) || 1)) * 864e5;
-  const { csv, summary } = type === 'inventory' ? inventoryReport() : salesReport({ from, to });
+  const { csv, summary } = type === 'inventory' ? await inventoryReport() : await salesReport({ from, to });
   const stamp = sgDate(to).replace(/[:]/g, '').slice(0, 17);
   const [y, m, d] = stamp.slice(0, 10).split('-');
   const base = `reports/${type}/${y}/${m}/${d}/${type}-${stamp}`;
   try {
     const csvLoc = await putObject(`${base}.csv`, csv, 'text/csv');
     const jsonLoc = await putObject(`${base}.json`, JSON.stringify(summary, null, 2), 'application/json');
-    if (type === 'sales') await putObject(QUICKSIGHT_FEED_KEY, salesReport({ from: 0, to }).csv, 'text/csv');
-    const rec = table('reports').insert({
-      id: id('rpt'), type, days: type === 'inventory' ? null : Number(days) || 1, trigger, by,
+    if (type === 'sales') await putObject(QUICKSIGHT_FEED_KEY, (await salesReport({ from: 0, to })).csv, 'text/csv');
+    const rec = {
+      id: db.id('rpt'), type, days: type === 'inventory' ? null : Number(days) || 1, trigger, by,
       storage: BUCKET ? 's3' : 'local', key: `${base}.csv`, location: csvLoc, summaryLocation: jsonLoc,
       sizeBytes: Buffer.byteLength(csv), summary, createdAt: to,
-    });
+    };
+    await db.query(
+      `INSERT INTO reports (id, type, days, trigger_source, requested_by, storage, s3_key, location, summary_location, size_bytes, summary, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [rec.id, rec.type, rec.days, rec.trigger, rec.by, rec.storage, rec.key, rec.location, rec.summaryLocation, rec.sizeBytes, db.json(rec.summary), db.ts(rec.createdAt)],
+    );
     log('info', 'report.generated', { type, location: csvLoc, trigger });
     return rec;
   } catch (err) {
@@ -121,6 +144,11 @@ async function runReport({ type = 'sales', days = 1, trigger = 'manual', by = nu
     throw err;
   }
 }
+
+// Report records in the API's shape (columns renamed where the API name is an SQL keyword).
+const REPORT_COLUMNS = 'id, type, days, trigger_source AS `trigger`, requested_by AS `by`, storage, s3_key AS `key`, location, summary_location, size_bytes, summary, created_at';
+const listReports = (limit) => db.query(`SELECT ${REPORT_COLUMNS} FROM reports ORDER BY created_at DESC LIMIT ?`, [limit]);
+const getReport = (reportId) => db.one(`SELECT ${REPORT_COLUMNS} FROM reports WHERE id = ?`, [String(reportId)]);
 
 async function readReport(rec) {
   if (rec.storage === 's3') {
@@ -154,16 +182,17 @@ function startScheduler() {
   log('info', 'report.scheduler_started', { nextRunInMin: Math.round(msUntilNextRun() / 60000), destination: BUCKET ? `s3://${BUCKET}` : 'local ./reports' });
 }
 
-module.exports = { runReport, readReport, startScheduler, destination: () => (BUCKET ? `s3://${BUCKET}` : 'local ./reports (set S3_BUCKET to push to S3)') };
+module.exports = { runReport, readReport, listReports, getReport, startScheduler, destination: () => (BUCKET ? `s3://${BUCKET}` : 'local ./reports (set S3_BUCKET to push to S3)') };
 
 // CLI: `npm run report` (usable as a scheduled ECS task / Lambda entry point)
 if (require.main === module) {
-  require('../seed').seed();
   (async () => {
+    await db.migrate();
+    await require('../seed').seed();
     const days = Number((process.argv.find((a) => a.startsWith('--days=')) || '').split('=')[1]) || 1;
     const s = await runReport({ type: 'sales', days, trigger: 'cli' });
     const i = await runReport({ type: 'inventory', trigger: 'cli' });
-    require('../lib/db').flush();
+    await db.close();
     console.log('Sales report:', s.location, '\nInventory report:', i.location);
   })().catch((e) => { console.error(e); process.exit(1); });
 }

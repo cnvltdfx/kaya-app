@@ -1,14 +1,16 @@
-// Seeds the store with products, promotions, demo users, reviews and historical orders.
-// Run `npm run seed` to wipe and reseed. The server seeds automatically on first start.
+// Seeds the database with products, promotions, demo users, reviews and historical orders.
+// The server seeds an empty database on startup (also in AWS). `npm run seed` wipes and reseeds.
 //
-// Demo accounts (development only):
+// Demo accounts:
 //   customer  demo@koolkaya.sg   / Demo@1234
-//   staff     staff@koolkaya.sg  / Staff@1234   (MFA code required)
-//   admin     admin@koolkaya.sg  / Admin@1234   (MFA code required)
+//   staff     staff@koolkaya.sg  / Staff@1234   (MFA off for now)
+//   admin     admin@koolkaya.sg  / Admin@1234   (MFA off for now)
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const db = require('./lib/db');
-const { hashPassword } = require('./lib/security');
+const { hashPassword, insertUser } = require('./lib/security');
+const { insertOrder } = require('./services/orders');
 const { convert, MARKETS } = require('./lib/markets');
 
 // Product art is committed in the frontend; `npm run images` regenerates it there.
@@ -77,43 +79,56 @@ function jarSvg(p) {
 </svg>`;
 }
 
-function seed({ reset = false } = {}) {
-  if (reset) db.reset();
-  const products = db.table('products');
-  if (products.all().length) return false;
+// Inserts the demo data if the database has no products yet; returns whether it did.
+// Runs under a database lock, so API servers starting together seed only once.
+async function seed({ reset = false } = {}) {
+  if (reset) await db.reset();
+  return db.withLock('kaya_seed', async () => {
+    if (await db.one('SELECT 1 FROM products LIMIT 1')) return false;
+    await db.tx(insertDemoData);
+    return true;
+  });
+}
 
+async function insertDemoData(t) {
   const now = Date.now();
-  for (const p of PRODUCTS) {
-    products.insert({
-      id: `prd_${p.slug}`,
-      slug: p.slug,
-      name: p.name,
-      size: p.size,
-      category: p.category,
-      price: p.price,
-      salePct: SALES[p.slug] || 0,
-      stock: p.stock,
-      lowStockThreshold: 15,
-      featured: !!p.featured,
-      description: p.description,
-      ingredients: p.ingredients,
-      image: `/img/products/${p.slug}.svg`,
-      active: true,
-      createdAt: now,
-    });
-  }
+  const products = PRODUCTS.map((p) => ({
+    id: `prd_${p.slug}`,
+    slug: p.slug,
+    name: p.name,
+    size: p.size,
+    category: p.category,
+    price: p.price,
+    salePct: SALES[p.slug] || 0,
+    stock: p.stock,
+    lowStockThreshold: 15,
+    featured: !!p.featured,
+    description: p.description,
+    ingredients: p.ingredients,
+    image: `/img/products/${p.slug}.svg`,
+    active: true,
+    createdAt: now,
+  }));
+  await t.query(
+    'INSERT INTO products (id, slug, name, size, category, price, sale_pct, stock, low_stock_threshold, featured, active, description, ingredients, image, created_at) VALUES ?',
+    [products.map((p) => [p.id, p.slug, p.name, p.size, p.category, p.price, p.salePct, p.stock, p.lowStockThreshold, p.featured, p.active, p.description, p.ingredients, p.image, db.ts(p.createdAt)])],
+  );
 
-  for (const promo of PROMOTIONS) db.table('promotions').insert({ id: db.id('promo'), ...promo });
+  await t.query(
+    'INSERT INTO promotions (id, code, description, type, value, min_spend, first_order_only, active) VALUES ?',
+    [PROMOTIONS.map((p) => [db.id('promo'), p.code, p.description, p.type, p.value, p.minSpend, !!p.firstOrderOnly, p.active])],
+  );
 
-  const users = db.table('users');
-  const mk = (email, name, role, pw, market, extra = {}) => users.insert({
+  // MFA is off for every seeded account, staff included, so the back office works in AWS too
+  // (where the code is only sent to the notification outbox).
+  const mk = (email, name, role, pw, market, extra = {}) => insertUser({
     id: db.id('usr'), email, name, role, passwordHash: hashPassword(pw), market, language: MARKETS[market].defaultLang,
     phone: '', address: { line1: '', line2: '', city: '', postcode: '', country: MARKETS[market].name },
-    mfaEnabled: role !== 'customer', createdAt: now - 90 * 864e5, ...extra,
-  });
-  mk('admin@koolkaya.sg', 'Aisha (Admin)', 'admin', 'Admin@1234', 'SG');
-  mk('staff@koolkaya.sg', 'Ben (Ops Staff)', 'staff', 'Staff@1234', 'SG');
-  const demo = mk('demo@koolkaya.sg', 'Demo Customer', 'customer', 'Demo@1234', 'SG', {
+    mfaEnabled: false, createdAt: now - 90 * 864e5, ...extra,
+  }, t);
+  await mk('admin@koolkaya.sg', 'Aisha (Admin)', 'admin', 'Admin@1234', 'SG');
+  await mk('staff@koolkaya.sg', 'Ben (Ops Staff)', 'staff', 'Staff@1234', 'SG');
+  const demo = await mk('demo@koolkaya.sg', 'Demo Customer', 'customer', 'Demo@1234', 'SG', {
     phone: '+65 8123 4567', language: 'en',
     address: { line1: '1 Kaya Lane', line2: '#01-23', city: 'Singapore', postcode: '123456', country: 'Singapore' },
   });
@@ -122,7 +137,7 @@ function seed({ reset = false } = {}) {
   const shoppers = { SG: [demo], MY: [], TH: [], HK: [] };
   const names = { SG: ['Wei Ling', 'Rahul', 'Siti'], MY: ['Ahmad', 'Mei Hua'], TH: ['Somchai', 'Ploy'], HK: ['Ka Yan', 'Jason'] };
   for (const [m, list] of Object.entries(names)) {
-    for (const n of list) shoppers[m].push(mk(`${n.toLowerCase().replace(/\s/g, '.')}@example.com`, n, 'customer', `Shop@${Math.random().toString(36).slice(2, 8)}A1`, m));
+    for (const n of list) shoppers[m].push(await mk(`${n.toLowerCase().replace(/\s/g, '.')}@example.com`, n, 'customer', `Shop@${Math.random().toString(36).slice(2, 8)}A1`, m));
   }
 
   // Reviews
@@ -135,20 +150,21 @@ function seed({ reset = false } = {}) {
     [3, 'Good but a bit too sweet for me.'],
   ];
   const allShoppers = Object.values(shoppers).flat();
-  products.all().forEach((p, i) => {
+  const reviews = [];
+  products.forEach((p, i) => {
     const n = 2 + (i % 3);
     for (let k = 0; k < n; k++) {
       const [rating, text] = reviewTexts[(i + k) % reviewTexts.length];
       const u = allShoppers[(i * 3 + k) % allShoppers.length];
-      db.table('reviews').insert({ id: db.id('rev'), productId: p.id, userId: u.id, userName: u.name, rating, text, verified: true, createdAt: now - (k + 1) * 6 * 864e5 });
+      reviews.push([db.id('rev'), p.id, u.id, u.name, rating, text, true, db.ts(now - (k + 1) * 6 * 864e5)]);
     }
   });
+  await t.query('INSERT INTO reviews (id, product_id, user_id, user_name, rating, text, verified, created_at) VALUES ?', [reviews]);
 
-  // Historical orders over the last 30 days
+  // Historical orders over the last 30 days, each with its paid payment record
   const statuses = ['delivered', 'delivered', 'delivered', 'shipped', 'processing'];
   let rnd = 42;
   const rand = () => ((rnd = (rnd * 16807) % 2147483647) / 2147483647);
-  const plist = products.all();
   for (let i = 0; i < 160; i++) {
     const r = rand();
     const market = r < 0.8 ? 'SG' : r < 0.8667 ? 'MY' : r < 0.9333 ? 'TH' : 'HK';
@@ -156,27 +172,33 @@ function seed({ reset = false } = {}) {
     const items = [];
     const count = 1 + Math.floor(rand() * 3);
     for (let k = 0; k < count; k++) {
-      const p = plist[Math.floor(rand() * plist.length)];
+      const p = products[Math.floor(rand() * products.length)];
       const unitSgd = Math.round(p.price * (1 - p.salePct / 100) * 100) / 100;
-      items.push({ productId: p.id, name: p.name, qty: 1 + Math.floor(rand() * 2), unitPriceSgd: unitSgd, unitPrice: convert(unitSgd, market) });
+      items.push({ productId: p.id, name: p.name, size: p.size, image: p.image, qty: 1 + Math.floor(rand() * 2), unitPriceSgd: unitSgd, unitPrice: convert(unitSgd, market) });
     }
     const subtotalSgd = items.reduce((s, it) => s + it.unitPriceSgd * it.qty, 0);
     const shippingSgd = subtotalSgd >= MARKETS[market].freeShippingOver / MARKETS[market].rate ? 0 : MARKETS[market].shippingFee / MARKETS[market].rate;
     const createdAt = now - Math.floor(rand() * 30 * 864e5);
     const totalSgd = Math.round((subtotalSgd + shippingSgd) * 100) / 100;
     const status = createdAt > now - 2 * 864e5 ? 'processing' : statuses[Math.floor(rand() * statuses.length)];
-    const orderId = `KK${(100000 + i).toString()}`;
-    db.table('orders').insert({
-      id: orderId, userId: user.id, email: user.email, market, currency: MARKETS[market].currency,
+    const { insertId } = await t.query('INSERT INTO order_numbers () VALUES ()');
+    const paymentMethod = ['card', 'paynow', 'applepay'][Math.floor(rand() * 3)];
+    const order = {
+      id: `KK${insertId}`, userId: user.id, email: user.email, market, currency: MARKETS[market].currency,
       items, fulfilment: market === 'SG' && rand() < 0.2 ? 'pickup' : 'delivery',
-      address: user.address, subtotal: convert(subtotalSgd, market), discount: 0, shipping: convert(shippingSgd, market),
-      total: convert(totalSgd, market), totalSgd, promoCode: null, paymentMethod: ['card', 'paynow', 'applepay'][Math.floor(rand() * 3)],
-      paymentStatus: 'paid', status, statusHistory: [{ status: 'placed', at: createdAt }, ...(status !== 'processing' ? [{ status, at: createdAt + 864e5 }] : [])],
-      createdAt,
-    });
+      address: user.address, pickupSlot: null, subtotal: convert(subtotalSgd, market), discount: 0, shipping: convert(shippingSgd, market),
+      total: convert(totalSgd, market), totalSgd, promoCode: null, paymentMethod,
+      paymentStatus: 'paid', paymentRef: `PAY-${crypto.randomBytes(5).toString('hex').toUpperCase()}`, paynow: null, status,
+      statusHistory: [{ status: 'placed', at: createdAt }, ...(status !== 'processing' ? [{ status, at: createdAt + 864e5 }] : [])],
+      idempotencyKey: null, createdAt, paidAt: createdAt,
+    };
+    await insertOrder(t, order);
+    const card = paymentMethod === 'card' ? ['Visa', '4242'] : paymentMethod === 'applepay' ? ['Apple Pay', null] : [null, null];
+    await t.query(
+      "INSERT INTO payments (id, order_id, user_id, method, amount, currency, reference, status, brand, last4, created_at, paid_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'paid', ?, ?, ?, ?)",
+      [db.id('pmt'), order.id, user.id, paymentMethod, order.total, order.currency, order.paymentRef, ...card, db.ts(createdAt), db.ts(createdAt)],
+    );
   }
-  db.flush();
-  return true;
 }
 
 function writeProductImages(dir = IMG_DIR) {
@@ -191,7 +213,12 @@ if (require.main === module) {
   if (process.argv.includes('--images')) {
     console.log('Wrote product images to', writeProductImages());
   } else {
-    seed({ reset: process.argv.includes('--reset') });
-    console.log('Seeded database at', db.DB_FILE);
+    (async () => {
+      const reset = process.argv.includes('--reset');
+      if (!reset) await db.migrate();
+      const seeded = await seed({ reset });
+      console.log(seeded ? `Seeded database ${db.DB_NAME}` : `Database ${db.DB_NAME} already has data (use --reset to wipe and reseed).`);
+      await db.close();
+    })().catch((e) => { console.error(e); process.exit(1); });
   }
 }

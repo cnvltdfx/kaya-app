@@ -1,9 +1,9 @@
 // Staff back-office: dashboard KPIs, product & inventory management, order fulfilment,
 // promotions, sales reports (pushed to S3), service metrics/alerts and the notification outbox.
-const express = require('express');
-const { table, id } = require('../lib/db');
-const { requireStaff } = require('../lib/security');
-const { decorateProduct } = require('../lib/pricing');
+const { Router } = require('../lib/router');
+const db = require('../lib/db');
+const { requireStaff, getUser } = require('../lib/security');
+const { findProducts, decorateProduct } = require('../lib/pricing');
 const { MARKETS } = require('../lib/markets');
 const obs = require('../lib/observability');
 const orders = require('./orders');
@@ -11,55 +11,59 @@ const notifications = require('./notifications');
 const reports = require('./reports');
 const { CATEGORIES } = require('./catalog');
 
-const router = express.Router();
+const router = Router();
 router.use(requireStaff);
 
 const r2 = (n) => Math.round(n * 100) / 100;
-function audit(req, action, meta) {
-  table('auditLog').insert({ id: id('aud'), userId: req.user.id, action, meta, at: Date.now() });
+async function audit(req, action, meta) {
+  await db.query('INSERT INTO audit_log (id, user_id, action, meta, at) VALUES (?, ?, ?, ?, ?)', [db.id('aud'), req.user.id, action, db.json(meta), db.ts(Date.now())]);
 }
 
-router.get('/dashboard', (req, res) => {
+// camelCase record -> column map for INSERT ... SET ? / UPDATE ... SET ?
+const columns = (rec) => Object.fromEntries(Object.entries(rec).map(([k, v]) => [db.snake(k), v]));
+
+router.get('/dashboard', async (req, res) => {
   const days = Math.max(1, Math.min(90, Number(req.query.days) || 30));
-  const since = Date.now() - days * 864e5;
-  const paid = table('orders').filter((o) => o.createdAt >= since && o.paymentStatus === 'paid');
-  const revenue = paid.reduce((s, o) => s + o.totalSgd, 0);
+  const since = db.ts(Date.now() - days * 864e5);
+  const PAID = "o.payment_status = 'paid' AND o.created_at >= ?";
+  const markets = await db.query(`SELECT o.market, COUNT(*) AS orders, SUM(o.total_sgd) AS revenue_sgd FROM orders o WHERE ${PAID} GROUP BY o.market`, [since]);
+  // Days are Singapore calendar days (UTC+8, no DST).
+  const daily = await db.query(`SELECT DATE_FORMAT(o.created_at + INTERVAL 8 HOUR, '%Y-%m-%d') AS day, SUM(o.total_sgd) AS revenue_sgd FROM orders o WHERE ${PAID} GROUP BY day`, [since]);
+  const top = await db.query(`SELECT i.name, SUM(i.qty) AS units FROM order_items i JOIN orders o ON o.id = i.order_id WHERE ${PAID} GROUP BY i.name ORDER BY units DESC, i.name LIMIT 5`, [since]);
+  const statuses = await db.query('SELECT status, COUNT(*) AS n FROM orders GROUP BY status');
+  const { customers } = await db.one("SELECT COUNT(*) AS customers FROM users WHERE role = 'customer'");
+  const lowStock = await db.query('SELECT id, name, stock FROM products WHERE active AND stock <= low_stock_threshold ORDER BY created_at, id');
+
   const byMarket = Object.fromEntries(Object.keys(MARKETS).map((k) => [k, { orders: 0, revenueSgd: 0 }]));
-  const daily = {};
-  const products = {};
-  for (const o of paid) {
-    byMarket[o.market].orders += 1;
-    byMarket[o.market].revenueSgd += o.totalSgd;
-    const day = new Date(o.createdAt).toLocaleDateString('sv-SE', { timeZone: 'Asia/Singapore' });
-    daily[day] = (daily[day] || 0) + o.totalSgd;
-    for (const it of o.items) products[it.name] = (products[it.name] || 0) + it.qty;
-  }
-  for (const v of Object.values(byMarket)) v.revenueSgd = r2(v.revenueSgd);
+  for (const m of markets) byMarket[m.market] = { orders: m.orders, revenueSgd: r2(m.revenueSgd) };
+  const paidOrders = markets.reduce((s, m) => s + m.orders, 0);
+  const revenue = markets.reduce((s, m) => s + m.revenueSgd, 0);
+  const byDay = Object.fromEntries(daily.map((d) => [d.day, d.revenueSgd]));
   const series = [];
   for (let i = days - 1; i >= 0; i--) {
     const d = new Date(Date.now() - i * 864e5).toLocaleDateString('sv-SE', { timeZone: 'Asia/Singapore' });
-    series.push({ date: d, revenueSgd: r2(daily[d] || 0) });
+    series.push({ date: d, revenueSgd: r2(byDay[d] || 0) });
   }
-  const statusCounts = {};
-  for (const o of table('orders').all()) statusCounts[o.status] = (statusCounts[o.status] || 0) + 1;
   res.json({
     days,
     revenueSgd: r2(revenue),
-    orders: paid.length,
-    aovSgd: paid.length ? r2(revenue / paid.length) : 0,
-    customers: table('users').filter((u) => u.role === 'customer').length,
+    orders: paidOrders,
+    aovSgd: paidOrders ? r2(revenue / paidOrders) : 0,
+    customers,
     byMarket,
     series,
-    topProducts: Object.entries(products).sort((a, b) => b[1] - a[1]).slice(0, 5).map(([name, units]) => ({ name, units })),
-    lowStock: table('products').filter((p) => p.active && p.stock <= p.lowStockThreshold).map((p) => ({ id: p.id, name: p.name, stock: p.stock })),
-    statusCounts,
+    topProducts: top.map((t) => ({ name: t.name, units: Number(t.units) })),
+    lowStock,
+    statusCounts: Object.fromEntries(statuses.map((s) => [s.status, s.n])),
   });
 });
 
 // ---- Products & inventory
-router.get('/products', (req, res) => {
-  res.json({ products: table('products').all().map((p) => decorateProduct(p, 'SG')), categories: CATEGORIES });
+router.get('/products', async (req, res) => {
+  res.json({ products: (await findProducts()).map((p) => decorateProduct(p, 'SG')), categories: CATEGORIES });
 });
+
+const getProduct = (productId) => db.one('SELECT * FROM products WHERE id = ?', [String(productId)]);
 
 function productPatch(b) {
   const patch = {};
@@ -77,28 +81,28 @@ function productPatch(b) {
   return patch;
 }
 
-router.post('/products', (req, res) => {
-  try {
-    const patch = productPatch(req.body || {});
-    if (!patch.name || !patch.price || !patch.category) return res.status(400).json({ error: 'Name, price and category are required.' });
-    const slug = patch.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') + '-' + Date.now().toString(36);
-    const p = table('products').insert({
-      id: `prd_${slug}`, slug, size: '250g', description: '', ingredients: '', salePct: 0, stock: 0, lowStockThreshold: 15,
-      featured: false, active: true, image: '/img/products/classic-pandan.svg', createdAt: Date.now(), ...patch,
-    });
-    audit(req, 'product.create', { productId: p.id });
-    res.status(201).json({ product: p });
-  } catch (e) { res.status(400).json({ error: e.message }); }
+router.post('/products', async (req, res) => {
+  let patch;
+  try { patch = productPatch(req.body || {}); } catch (e) { return res.status(400).json({ error: e.message }); }
+  if (!patch.name || !patch.price || !patch.category) return res.status(400).json({ error: 'Name, price and category are required.' });
+  const slug = patch.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') + '-' + Date.now().toString(36);
+  const p = {
+    id: `prd_${slug}`, slug, size: '250g', description: '', ingredients: '', salePct: 0, stock: 0, lowStockThreshold: 15,
+    featured: false, active: true, image: '/img/products/classic-pandan.svg', createdAt: Date.now(), ...patch,
+  };
+  await db.query('INSERT INTO products SET ?', [columns({ ...p, createdAt: db.ts(p.createdAt) })]);
+  await audit(req, 'product.create', { productId: p.id });
+  res.status(201).json({ product: await getProduct(p.id) });
 });
 
-router.put('/products/:id', (req, res) => {
-  try {
-    const patch = productPatch(req.body || {});
-    const p = table('products').update(req.params.id, patch);
-    if (!p) return res.status(404).json({ error: 'Product not found.' });
-    audit(req, 'product.update', { productId: p.id, fields: Object.keys(patch) });
-    res.json({ product: p });
-  } catch (e) { res.status(400).json({ error: e.message }); }
+router.put('/products/:id', async (req, res) => {
+  let patch;
+  try { patch = productPatch(req.body || {}); } catch (e) { return res.status(400).json({ error: e.message }); }
+  if (Object.keys(patch).length) await db.query('UPDATE products SET ? WHERE id = ?', [columns(patch), String(req.params.id)]);
+  const p = await getProduct(req.params.id);
+  if (!p) return res.status(404).json({ error: 'Product not found.' });
+  await audit(req, 'product.update', { productId: p.id, fields: Object.keys(patch) });
+  res.json({ product: p });
 });
 
 // ---- Orders
@@ -111,93 +115,101 @@ const TRANSITIONS = {
   cancelled: [],
 };
 
-router.get('/orders', (req, res) => {
+router.get('/orders', async (req, res) => {
   const { status, market, q } = req.query;
-  let list = table('orders').all();
-  if (status) list = list.filter((o) => o.status === status);
-  if (market) list = list.filter((o) => o.market === market);
-  if (q) { const s = String(q).toLowerCase(); list = list.filter((o) => o.id.toLowerCase().includes(s) || o.email.includes(s)); }
-  list = [...list].sort((a, b) => b.createdAt - a.createdAt);
-  res.json({ orders: list.slice(0, 200), total: list.length, transitions: TRANSITIONS });
+  const where = ['1 = 1'];
+  const params = [];
+  if (status) { where.push('o.status = ?'); params.push(String(status)); }
+  if (market) { where.push('o.market = ?'); params.push(String(market)); }
+  if (q) {
+    const like = `%${String(q).replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+    where.push('(o.id LIKE ? OR o.email LIKE ?)');
+    params.push(like, like);
+  }
+  const sql = where.join(' AND ');
+  const { total } = await db.one(`SELECT COUNT(*) AS total FROM orders o WHERE ${sql}`, params);
+  res.json({ orders: await orders.findOrders(sql, params, { limit: 200 }), total, transitions: TRANSITIONS });
 });
 
-router.put('/orders/:id/status', (req, res) => {
-  const order = table('orders').get(req.params.id);
+router.put('/orders/:id/status', async (req, res) => {
+  const order = await orders.getOrder(req.params.id);
   if (!order) return res.status(404).json({ error: 'Order not found.' });
   const next = req.body?.status;
-  if (!(TRANSITIONS[order.status] || []).includes(next)) return res.status(409).json({ error: `Cannot move order from ${order.status} to ${next}.` });
+  const conflict = { error: `Cannot move order from ${order.status} to ${next}.` };
+  if (!(TRANSITIONS[order.status] || []).includes(next)) return res.status(409).json(conflict);
   if (next === 'ready_for_pickup' && order.fulfilment !== 'pickup') return res.status(409).json({ error: 'Only pickup orders can be marked ready for pickup.' });
   if (next === 'shipped' && order.fulfilment !== 'delivery') return res.status(409).json({ error: 'Pickup orders are not shipped.' });
-  if (next === 'cancelled') {
-    orders.adjustStock(order.items, +1);
-    require('./payments').refund(order.id);
-    table('orders').update(order.id, { paymentStatus: order.paymentStatus === 'paid' ? 'refunded' : 'cancelled' });
-  }
-  const updated = orders.setStatus(order, next, `Updated by ${req.user.name}`);
-  const customer = table('users').get(order.userId);
-  if (customer) notifications.notifyOrder(updated, customer, next);
-  audit(req, 'order.status', { orderId: order.id, from: order.status, to: next });
+  const note = `Updated by ${req.user.name}`;
+  const updated = next === 'cancelled' ? await orders.cancelOrder(order, note) : await orders.setStatus(order, next, note);
+  if (!updated) return res.status(409).json(conflict); // someone else changed it first
+  const customer = await getUser(order.userId);
+  if (customer) await notifications.notifyOrder(updated, customer, next);
+  await audit(req, 'order.status', { orderId: order.id, from: order.status, to: next });
   res.json({ order: updated });
 });
 
 // ---- Promotions
-router.get('/promotions', (_req, res) => res.json({ promotions: table('promotions').all() }));
+router.get('/promotions', async (_req, res) => res.json({ promotions: await db.query('SELECT * FROM promotions ORDER BY code') }));
 
-router.post('/promotions', (req, res) => {
+router.post('/promotions', async (req, res) => {
   const b = req.body || {};
   const code = String(b.code || '').trim().toUpperCase();
+  const exists = { error: 'That code already exists.' };
   if (!/^[A-Z0-9]{3,20}$/.test(code)) return res.status(400).json({ error: 'Code must be 3-20 letters/numbers.' });
-  if (table('promotions').find((p) => p.code === code)) return res.status(409).json({ error: 'That code already exists.' });
+  if (await db.one('SELECT 1 FROM promotions WHERE code = ?', [code])) return res.status(409).json(exists);
   const type = b.type === 'shipping' ? 'shipping' : 'percent';
   const value = Number(b.value) || 0;
   if (type === 'percent' && !(value > 0 && value <= 50)) return res.status(400).json({ error: 'Discount must be between 1 and 50%.' });
-  const promo = table('promotions').insert({ id: id('promo'), code, description: String(b.description || '').slice(0, 120) || `${value}% off`, type, value, minSpend: Math.max(0, Number(b.minSpend) || 0), firstOrderOnly: false, active: true });
-  audit(req, 'promotion.create', { code });
+  const promo = { id: db.id('promo'), code, description: String(b.description || '').slice(0, 120) || `${value}% off`, type, value, minSpend: Math.max(0, Number(b.minSpend) || 0), firstOrderOnly: false, active: true };
+  try {
+    await db.query('INSERT INTO promotions SET ?', [columns(promo)]);
+  } catch (err) {
+    if (err.code === 'ER_DUP_ENTRY') return res.status(409).json(exists);
+    throw err;
+  }
+  await audit(req, 'promotion.create', { code });
   res.status(201).json({ promotion: promo });
 });
 
-router.put('/promotions/:id', (req, res) => {
-  const p = table('promotions').update(req.params.id, { active: !!req.body?.active });
+router.put('/promotions/:id', async (req, res) => {
+  await db.query('UPDATE promotions SET active = ? WHERE id = ?', [!!req.body?.active, String(req.params.id)]);
+  const p = await db.one('SELECT * FROM promotions WHERE id = ?', [String(req.params.id)]);
   if (!p) return res.status(404).json({ error: 'Promotion not found.' });
-  audit(req, 'promotion.toggle', { code: p.code, active: p.active });
+  await audit(req, 'promotion.toggle', { code: p.code, active: p.active });
   res.json({ promotion: p });
 });
 
 // ---- Reports (pushed to S3)
-router.get('/reports', (_req, res) => {
-  res.json({ reports: table('reports').all().slice().sort((a, b) => b.createdAt - a.createdAt).slice(0, 50), destination: reports.destination() });
+router.get('/reports', async (_req, res) => {
+  res.json({ reports: await reports.listReports(50), destination: reports.destination() });
 });
 
-router.post('/reports', async (req, res, next) => {
-  try {
-    const type = req.body?.type === 'inventory' ? 'inventory' : 'sales';
-    const rec = await reports.runReport({ type, days: req.body?.days, trigger: 'manual', by: req.user.email });
-    audit(req, 'report.run', { type, location: rec.location });
-    res.status(201).json({ report: rec });
-  } catch (e) { next(e); }
+router.post('/reports', async (req, res) => {
+  const type = req.body?.type === 'inventory' ? 'inventory' : 'sales';
+  const rec = await reports.runReport({ type, days: req.body?.days, trigger: 'manual', by: req.user.email });
+  await audit(req, 'report.run', { type, location: rec.location });
+  res.status(201).json({ report: rec });
 });
 
-router.get('/reports/:id/download', async (req, res, next) => {
-  try {
-    const rec = table('reports').get(req.params.id);
-    if (!rec) return res.status(404).json({ error: 'Report not found.' });
-    const body = await reports.readReport(rec);
-    res.set('Content-Type', 'text/csv');
-    res.set('Content-Disposition', `attachment; filename="${rec.key.split('/').pop()}"`);
-    res.send(body);
-  } catch (e) { next(e); }
+router.get('/reports/:id/download', async (req, res) => {
+  const rec = await reports.getReport(req.params.id);
+  if (!rec) return res.status(404).json({ error: 'Report not found.' });
+  const body = await reports.readReport(rec);
+  res.set('Content-Type', 'text/csv');
+  res.set('Content-Disposition', `attachment; filename="${rec.key.split('/').pop()}"`);
+  res.send(body);
 });
 
 // ---- Observability
 router.get('/metrics', (_req, res) => res.json(obs.snapshot()));
 
-router.get('/notifications', (_req, res) => {
-  res.json({ notifications: table('notifications').all().slice(-100).reverse() });
+router.get('/notifications', async (_req, res) => {
+  res.json({ notifications: await db.query(`SELECT ${notifications.COLUMNS} FROM notifications ORDER BY created_at DESC, id LIMIT 100`) });
 });
 
-router.get('/audit', (_req, res) => {
-  const users = Object.fromEntries(table('users').all().map((u) => [u.id, u.email]));
-  res.json({ entries: table('auditLog').all().slice(-100).reverse().map((e) => ({ ...e, email: users[e.userId] })) });
+router.get('/audit', async (_req, res) => {
+  const entries = await db.query('SELECT a.*, u.email FROM audit_log a LEFT JOIN users u ON u.id = a.user_id ORDER BY a.at DESC, a.id LIMIT 100');
+  res.json({ entries });
 });
 
 module.exports = router;

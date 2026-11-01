@@ -3,13 +3,13 @@
 // never touches our servers; API keys come from AWS Secrets Manager. We only store last4 + brand.
 //
 // Test cards: 4242 4242 4242 4242 (success), 4000 0000 0000 0002 (declined). Any future expiry, any CVC.
-const express = require('express');
 const crypto = require('crypto');
-const { table, id } = require('../lib/db');
+const { Router } = require('../lib/router');
+const db = require('../lib/db');
 const { requireAuth } = require('../lib/security');
 const { log } = require('../lib/observability');
 
-const router = express.Router();
+const router = Router();
 const METHODS = ['card', 'paynow', 'applepay'];
 
 function luhn(num) {
@@ -46,9 +46,9 @@ function validateCard(card = {}) {
 }
 
 // Returns { status: 'paid' | 'pending' | 'failed', ... }
-function charge({ method, card, amount, currency, orderId, userId }) {
+async function charge({ method, card, amount, currency, orderId, userId }) {
   const reference = `PAY-${crypto.randomBytes(5).toString('hex').toUpperCase()}`;
-  const base = { id: id('pmt'), orderId, userId, method, amount, currency, reference, createdAt: Date.now() };
+  const base = { id: db.id('pmt'), orderId, userId, method, amount, currency, reference, createdAt: Date.now() };
   let result;
   if (method === 'card') {
     const v = validateCard(card);
@@ -62,35 +62,46 @@ function charge({ method, card, amount, currency, orderId, userId }) {
   } else {
     result = { status: 'failed', error: 'Unsupported payment method.' };
   }
-  const rec = table('payments').insert({ ...base, ...result });
+  const rec = { ...base, ...result };
+  await db.query(
+    `INSERT INTO payments (id, order_id, user_id, method, amount, currency, reference, status, error, brand, last4, paynow_ref, uen, created_at, paid_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [rec.id, orderId, userId, method, amount, currency, reference, rec.status, rec.error || null, rec.brand || null, rec.last4 || null,
+      rec.paynowRef || null, rec.uen || null, db.ts(rec.createdAt), rec.status === 'paid' ? db.ts(rec.createdAt) : null],
+  );
   log(result.status === 'failed' ? 'warn' : 'info', 'payment', { orderId, method, status: result.status, amount, currency });
   return rec;
 }
 
-function refund(orderId) {
-  const p = table('payments').find((x) => x.orderId === orderId && x.status === 'paid');
-  if (p) table('payments').update(p.id, { status: 'refunded', refundedAt: Date.now() });
-  return p;
+async function refund(orderId) {
+  const r = await db.query("UPDATE payments SET status = 'refunded', refunded_at = ? WHERE order_id = ? AND status = 'paid'", [db.ts(Date.now()), orderId]);
+  return r.affectedRows > 0;
+}
+
+// Latest payment attempt for an order, without the columns that don't apply to it.
+async function latestPayment(orderId) {
+  const p = await db.one('SELECT * FROM payments WHERE order_id = ? ORDER BY created_at DESC LIMIT 1', [orderId]);
+  return p && Object.fromEntries(Object.entries(p).filter(([, v]) => v !== null));
 }
 
 // Simulates the bank webhook that confirms a PayNow transfer.
-router.post('/:orderId/paynow/confirm', requireAuth, (req, res) => {
-  const order = table('orders').get(req.params.orderId);
-  if (!order || order.userId !== req.user.id) return res.status(404).json({ error: 'Order not found.' });
-  if (order.paymentStatus !== 'pending') return res.status(409).json({ error: 'This order is not awaiting payment.' });
-  const pmt = table('payments').find((p) => p.orderId === order.id && p.status === 'pending');
-  if (pmt) table('payments').update(pmt.id, { status: 'paid', paidAt: Date.now() });
+router.post('/:orderId/paynow/confirm', requireAuth, async (req, res) => {
   const orders = require('./orders');
-  const updated = orders.markPaid(order, req.user);
+  const order = await orders.getOrder(req.params.orderId);
+  if (!order || order.userId !== req.user.id) return res.status(404).json({ error: 'Order not found.' });
+  const notAwaiting = { error: 'This order is not awaiting payment.' };
+  if (order.paymentStatus !== 'pending') return res.status(409).json(notAwaiting);
+  const updated = await orders.markPaid(order, req.user);
+  if (!updated) return res.status(409).json(notAwaiting);
+  await db.query("UPDATE payments SET status = 'paid', paid_at = ? WHERE order_id = ? AND status = 'pending'", [db.ts(Date.now()), order.id]);
   res.json({ order: updated });
 });
 
-router.get('/:orderId/receipt', requireAuth, (req, res) => {
-  const order = table('orders').get(req.params.orderId);
+router.get('/:orderId/receipt', requireAuth, async (req, res) => {
+  const order = await require('./orders').getOrder(req.params.orderId);
   const staff = ['staff', 'admin'].includes(req.user.role);
   if (!order || (order.userId !== req.user.id && !staff)) return res.status(404).json({ error: 'Order not found.' });
-  const payment = table('payments').filter((p) => p.orderId === order.id).sort((a, b) => b.createdAt - a.createdAt)[0] || null;
-  res.json({ order, payment });
+  res.json({ order, payment: await latestPayment(order.id) });
 });
 
 module.exports = router;

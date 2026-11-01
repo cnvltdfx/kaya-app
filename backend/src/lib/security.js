@@ -1,7 +1,7 @@
 // Password hashing, session tokens, auth middleware, security headers and rate limiting.
 // In AWS: Cognito (auth + MFA), WAF rate-based rules (bot mitigation), Secrets Manager (secrets).
 const crypto = require('crypto');
-const { table, id } = require('./db');
+const db = require('./db');
 
 const SESSION_TTL_MS = 7 * 24 * 3600 * 1000;
 
@@ -18,31 +18,60 @@ function verifyPassword(pw, stored) {
   return crypto.timingSafeEqual(test, Buffer.from(hash, 'hex'));
 }
 
-function createSession(userId) {
+const sha256 = (s) => crypto.createHash('sha256').update(String(s)).digest('hex');
+
+// users row -> user record (address columns folded back into an object)
+function toUser(row) {
+  if (!row) return null;
+  const { addressLine1, addressLine2, addressCity, addressPostcode, addressCountry, ...u } = row;
+  return { ...u, address: { line1: addressLine1, line2: addressLine2, city: addressCity, postcode: addressPostcode, country: addressCountry } };
+}
+
+async function getUser(userId) {
+  return toUser(await db.one('SELECT * FROM users WHERE id = ?', [userId]));
+}
+
+async function findUserByEmail(email) {
+  return toUser(await db.one('SELECT * FROM users WHERE email = ?', [email]));
+}
+
+// Inserts a user record (same shape toUser returns) and returns it.
+async function insertUser(u, q = db) {
+  const a = u.address || {};
+  await q.query(
+    `INSERT INTO users (id, email, name, role, password_hash, sso_provider, market, language, phone,
+       address_line1, address_line2, address_city, address_postcode, address_country, mfa_enabled, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [u.id, u.email, u.name, u.role, u.passwordHash, u.ssoProvider || null, u.market, u.language, u.phone || '',
+      a.line1 || '', a.line2 || '', a.city || '', a.postcode || '', a.country || '', !!u.mfaEnabled, db.ts(u.createdAt)],
+  );
+  return u;
+}
+
+async function createSession(userId) {
   const token = crypto.randomBytes(32).toString('hex');
-  table('sessions').insert({ id: id('ses'), token, userId, expiresAt: Date.now() + SESSION_TTL_MS });
+  const now = Date.now();
+  await db.query('INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)', [sha256(token), userId, db.ts(now), db.ts(now + SESSION_TTL_MS)]);
   return token;
 }
 
-function destroySession(token) {
-  table('sessions').remove((s) => s.token === token);
+async function destroySession(token) {
+  await db.query('DELETE FROM sessions WHERE token_hash = ?', [sha256(token)]);
 }
 
-function currentUser(req) {
+async function currentUser(req) {
   const h = req.get('authorization') || '';
   const token = h.startsWith('Bearer ') ? h.slice(7) : null;
   if (!token) return null;
-  const ses = table('sessions').find((s) => s.token === token);
-  if (!ses || ses.expiresAt < Date.now()) return null;
-  return table('users').get(ses.userId) || null;
+  const row = await db.one('SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ? AND s.expires_at > ?', [sha256(token), db.ts(Date.now())]);
+  return toUser(row);
 }
 
 // Attaches req.user if a valid session token is present.
 function attachUser(req, _res, next) {
-  req.user = currentUser(req);
   req.token = (req.get('authorization') || '').slice(7) || null;
   req.market = ['SG', 'MY', 'TH', 'HK'].includes(req.get('x-market')) ? req.get('x-market') : 'SG';
-  next();
+  currentUser(req).then((user) => { req.user = user; next(); }, next);
 }
 
 function requireAuth(req, res, next) {
@@ -113,6 +142,6 @@ function publicUser(u) {
 }
 
 module.exports = {
-  hashPassword, verifyPassword, createSession, destroySession,
+  hashPassword, verifyPassword, sha256, toUser, getUser, findUserByEmail, insertUser, createSession, destroySession,
   attachUser, requireAuth, requireStaff, securityHeaders, cors, rateLimit, publicUser,
 };

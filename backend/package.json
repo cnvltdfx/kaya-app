@@ -10,11 +10,15 @@
     "seed": "node src/seed.js --reset",
     "images": "node src/seed.js --images",
     "report": "node src/services/reports.js --run",
-    "test": "node --test test/"
+    "test": "node --test"
   },
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.600.0",
-    "express": "^4.19.2"
+    "@aws-sdk/client-secrets-manager": "^3.1161.0",
+    "express": "^4.19.2",
+    "mysql2": "^3.24.6"
   }
 }

@@ -1,0 +1,23 @@
+# Local MySQL for development and tests: `docker compose up -d` from backend/.
+# Matches the defaults in src/lib/db.js (user kaya / password kaya, database kaya).
+# The tests use a separate database, kaya_test, created by db/init.sql.
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: kaya
+      MYSQL_USER: kaya
+      MYSQL_PASSWORD: kaya
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-ukaya", "-pkaya"]
+      interval: 5s
+      retries: 20
+
+volumes:
+  mysql-data:
