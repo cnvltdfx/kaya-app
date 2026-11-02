@@ -95,6 +95,33 @@ resource "aws_vpc_security_group_egress_rule" "report_generator_https" {
   cidr_ipv4         = "0.0.0.0/0"
 }
 
+resource "aws_security_group" "order_worker" {
+  name        = "${var.project_name}-order-worker"
+  description = "Order worker Lambda"
+  vpc_id      = aws_vpc.main.id
+
+  tags = { Name = "${var.project_name}-order-worker-sg" }
+}
+
+resource "aws_vpc_security_group_egress_rule" "order_worker_to_db" {
+  security_group_id            = aws_security_group.order_worker.id
+  description                  = "MySQL to the database"
+  ip_protocol                  = "tcp"
+  from_port                    = 3306
+  to_port                      = 3306
+  referenced_security_group_id = aws_security_group.db.id
+}
+
+# HTTPS via NAT for Secrets Manager (DB password) and SNS (order events).
+resource "aws_vpc_security_group_egress_rule" "order_worker_https" {
+  security_group_id = aws_security_group.order_worker.id
+  description       = "HTTPS to AWS APIs"
+  ip_protocol       = "tcp"
+  from_port         = 443
+  to_port           = 443
+  cidr_ipv4         = "0.0.0.0/0"
+}
+
 resource "aws_security_group" "nat" {
   name        = "${var.project_name}-nat"
   description = "NAT instance"
@@ -132,4 +159,13 @@ resource "aws_vpc_security_group_ingress_rule" "db_from_app" {
   from_port                    = 3306
   to_port                      = 3306
   referenced_security_group_id = aws_security_group.app.id
+}
+
+resource "aws_vpc_security_group_ingress_rule" "db_from_order_worker" {
+  security_group_id            = aws_security_group.db.id
+  description                  = "MySQL from the order worker Lambda"
+  ip_protocol                  = "tcp"
+  from_port                    = 3306
+  to_port                      = 3306
+  referenced_security_group_id = aws_security_group.order_worker.id
 }

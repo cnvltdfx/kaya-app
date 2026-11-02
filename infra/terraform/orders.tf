@@ -1,9 +1,9 @@
-# Decoupled order processing (placeholder wiring; Lambda code in infra/lambdas is stubbed).
-# API -> SQS order queue (+ DLQ) -> order-worker Lambda
+# Decoupled order processing (Lambda code in infra/lambdas).
+# API -> SQS order queue (+ DLQ) -> order-worker Lambda (settles the order in the DB)
 #     -> SNS order-events -> email-sender Lambda -> SES; staff get rejected orders by email.
-# Standalone for now: no VPC, DB or project KMS key, so it can be applied on its own.
-# Once the DB exists, attach the worker to the VPC (app subnet + a SG allowed into the DB)
-# and pass it the DB host, name and secret ARN.
+# The worker runs in the private app subnet to reach the DB, and goes out through the NAT
+# instance for Secrets Manager and SNS, so this file needs the main stack. The email sender
+# never touches the DB and stays outside the VPC.
 
 locals {
   order_worker_name = "${var.project_name}-order-worker"
@@ -78,13 +78,21 @@ resource "aws_lambda_function" "order_worker" {
   timeout          = var.order_worker_timeout
   memory_size      = 256
 
+  vpc_config {
+    subnet_ids         = [aws_subnet.app.id]
+    security_group_ids = [aws_security_group.order_worker.id]
+  }
+
   environment {
     variables = {
       ORDER_EVENTS_TOPIC_ARN = aws_sns_topic.order_events.arn
+      DB_HOST                = aws_db_instance.main.address
+      DB_NAME                = var.db_name
+      DB_SECRET_ARN          = aws_db_instance.main.master_user_secret[0].secret_arn
     }
   }
 
-  depends_on = [aws_cloudwatch_log_group.order_worker, aws_iam_role_policy_attachment.order_worker_logs]
+  depends_on = [aws_cloudwatch_log_group.order_worker, aws_iam_role_policy_attachment.order_worker_vpc]
 }
 
 resource "aws_lambda_event_source_mapping" "orders" {

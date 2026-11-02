@@ -86,6 +86,7 @@ The first line copies your AWS session into the shell. The credential helper nee
 ## 4. Create everything else
 
 ```sh
+(cd infra/lambdas/order-worker && npm ci --omit=dev)   # the order worker's zip bundles mysql2
 cd infra/terraform
 terraform apply
 ```
@@ -190,23 +191,16 @@ Terraform creates the QuickSight data source, dataset and daily refresh only onc
    - Useful visuals: revenue by `market`, by `created_at_sgt` (aggregated by day), and by `product`.
    - **Publish** it as a dashboard and share it with staff.
 
-## 9. Order processing (placeholders)
+## 9. Order processing
 
-`orders.tf` creates the decoupled order pipeline: an SQS order queue with a dead-letter queue, an order-worker Lambda, an SNS order-events topic, an email-sender Lambda, and an optional SES sender identity. The Lambda code in `infra/lambdas/` is a stub that only logs; the app doesn't send to the queue yet. It doesn't use the VPC, DB or project KMS key, so it can be applied on its own (see below); the worker moves into the VPC once the DB exists.
+`orders.tf` creates the decoupled order pipeline as part of step 4: an SQS order queue with a dead-letter queue, an order-worker Lambda, an SNS order-events topic, an email-sender Lambda, and an optional SES sender identity.
 
-The order worker bundles `mysql2`, so install it before every apply (Terraform zips the folder as it is):
+1. At checkout the API reserves stock and saves the order as `pending_payment`.
+2. Once payment goes through, the API sends `{"orderId":"KK100123","outcome":"paid"}` to the queue (`ORDER_QUEUE_URL`).
+3. The worker, in the private app subnet, settles the order in the database and publishes an order event to SNS. It reaches Secrets Manager and SNS through the NAT instance.
+4. The email sender, outside the VPC, emails the customer through SES. Staff subscribed to the topic get `rejected` events (money received for an already-cancelled order) to refund by hand.
 
-```powershell
-cd ..\lambdas\order-worker; npm ci --omit=dev; cd ..\..\terraform
-```
-
-Its tests run against local MySQL (`docker compose up -d` in `backend/`): `cd infra/lambdas/order-worker && npm install && npm test`.
-
-Apply just this part:
-
-```powershell
-terraform apply '-target=aws_lambda_event_source_mapping.orders' '-target=aws_sns_topic_subscription.email_sender' '-target=aws_sns_topic_subscription.staff_email' '-target=aws_sesv2_email_identity.sender'
-```
+The order worker bundles `mysql2`, so run `npm ci --omit=dev` in `infra/lambdas/order-worker` before every `terraform apply` (Terraform zips the folder as it is). Without it the worker fails with `Cannot find package 'mysql2'`. Both Lambdas have tests: `npm install && npm test` in each folder; the worker's need local MySQL (`docker compose up -d` in `backend/`).
 
 Optional settings in `terraform.tfvars`:
 
@@ -217,10 +211,9 @@ staff_alert_email = "staff@example.com"   # SNS emails a subscription confirmati
 
 New SES accounts are in the **sandbox**: they can only send to verified addresses until you request production access in the SES console.
 
-Smoke test after `terraform apply`:
+Smoke test: place an order in the app with the test card `4242 4242 4242 4242`. The order page shows "Confirming your payment…", then "Processing" a few seconds later. Then check both Lambdas' logs, and send a test email straight through SNS:
 
 ```sh
-aws sqs send-message --queue-url "$(terraform output -raw order_queue_url)" --message-body '{"orderId":"KK100001","outcome":"paid"}'
 aws logs tail /aws/lambda/kool-kaya-kitchen-order-worker --since 5m
 aws sns publish --topic-arn "$(terraform output -raw order_events_topic_arn)" \
   --message '{"orderId":"KK100001","status":"confirmed","orderStatus":"processing","paymentStatus":"paid","email":"you@example.com","customerName":"Test","currency":"SGD","total":12,"items":[{"name":"Classic Pandan Kaya","qty":1}]}' \
