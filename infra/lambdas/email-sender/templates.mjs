@@ -4,6 +4,8 @@
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
 // evt: { orderId, status, orderStatus, paymentStatus, reason?, email, customerName, currency, total, items: [{ name, qty }] }
+// status: confirmed | cancelled (checkout expired) | rejected (paid after the order was cancelled).
+// `reason` is for staff (they get rejected events from SNS directly) and is never shown to customers.
 // Returns { to, subject, text, html }, or null for an event that has no customer email.
 export function buildEmail(evt) {
   const amount = `${evt.currency} ${Number(evt.total).toFixed(2)}`;
@@ -11,20 +13,21 @@ export function buildEmail(evt) {
   let subject;
   let lines;
 
-  if (evt.status === 'rejected') {
-    subject = `We couldn't fulfil order ${evt.orderId}`;
-    lines = [
-      `Sorry ${name}, ${evt.reason || 'an item in your order is no longer available'}, so we couldn't fulfil order ${evt.orderId}.`,
-      evt.paymentStatus === 'refunded'
-        ? `Your payment of ${amount} will be refunded within 5-7 business days.`
-        : 'You have not been charged.',
-    ];
-  } else if (evt.orderStatus === 'pending_payment') {
-    subject = `Complete payment for ${evt.orderId}`;
-    lines = [`Thanks ${name}! Scan the PayNow QR on the order page to pay ${amount} for order ${evt.orderId}.`];
-  } else if (evt.orderStatus === 'processing') {
+  if (evt.status === 'confirmed') {
     subject = `Order ${evt.orderId} confirmed`;
     lines = [`Thanks ${name}! We've received your order ${evt.orderId} (${amount}). We'll let you know when it ships.`];
+  } else if (evt.status === 'cancelled') {
+    subject = `Order ${evt.orderId} cancelled`;
+    lines = [
+      `Hi ${name}, payment for order ${evt.orderId} wasn't completed in time, so we've cancelled it. You have not been charged.`,
+      'Your items are back in stock if you would like to order again.',
+    ];
+  } else if (evt.status === 'rejected') {
+    subject = `Order ${evt.orderId} cancelled`;
+    lines = [
+      `Hi ${name}, we received your payment for order ${evt.orderId}, but the order had already been cancelled.`,
+      `Your payment of ${amount} will be refunded within 5-7 business days.`,
+    ];
   } else {
     return null;
   }

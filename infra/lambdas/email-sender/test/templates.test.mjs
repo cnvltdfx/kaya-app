@@ -7,7 +7,7 @@ const base = {
   items: [{ name: 'Classic Pandan Kaya', qty: 2 }, { name: 'Musang King Durian Kaya', qty: 1 }],
 };
 
-test('confirmed paid order', () => {
+test('confirmed order', () => {
   const e = buildEmail({ ...base, status: 'confirmed', orderStatus: 'processing', paymentStatus: 'paid' });
   assert.equal(e.to, 'a@example.com');
   assert.equal(e.subject, 'Order KK100123 confirmed');
@@ -16,23 +16,18 @@ test('confirmed paid order', () => {
   assert.match(e.html, /Total: SGD 32\.00/);
 });
 
-test('confirmed PayNow order waiting for payment', () => {
-  const e = buildEmail({ ...base, status: 'confirmed', orderStatus: 'pending_payment', paymentStatus: 'pending' });
-  assert.equal(e.subject, 'Complete payment for KK100123');
-  assert.match(e.text, /pay SGD 32\.00/);
-});
-
-test('rejected paid order mentions the refund and the reason', () => {
-  const e = buildEmail({ ...base, status: 'rejected', orderStatus: 'rejected', paymentStatus: 'refunded', reason: 'Musang King Durian Kaya is out of stock' });
-  assert.equal(e.subject, "We couldn't fulfil order KK100123");
-  assert.match(e.text, /Musang King Durian Kaya is out of stock/);
-  assert.match(e.text, /refunded within 5-7 business days/);
-});
-
-test('rejected unpaid order says nothing was charged', () => {
-  const e = buildEmail({ ...base, status: 'rejected', orderStatus: 'rejected', paymentStatus: 'cancelled', reason: 'x is out of stock' });
+test('cancelled after checkout expired says nothing was charged', () => {
+  const e = buildEmail({ ...base, status: 'cancelled', orderStatus: 'cancelled', paymentStatus: 'cancelled' });
+  assert.equal(e.subject, 'Order KK100123 cancelled');
+  assert.match(e.text, /wasn't completed in time/);
   assert.match(e.text, /You have not been charged/);
-  assert.doesNotMatch(e.text, /refunded/);
+});
+
+test('rejected (paid after cancel) promises a refund and hides the staff reason', () => {
+  const e = buildEmail({ ...base, status: 'rejected', orderStatus: 'cancelled', paymentStatus: 'cancelled', reason: 'Payment received for cancelled order KK100123: refund it manually' });
+  assert.equal(e.subject, 'Order KK100123 cancelled');
+  assert.match(e.text, /refunded within 5-7 business days/);
+  assert.doesNotMatch(e.text, /manually/);
 });
 
 test('customer-supplied text is escaped in the HTML', () => {
@@ -41,6 +36,6 @@ test('customer-supplied text is escaped in the HTML', () => {
   assert.match(e.html, /&lt;script&gt;/);
 });
 
-test('other statuses have no customer email', () => {
-  assert.equal(buildEmail({ ...base, status: 'confirmed', orderStatus: 'shipped' }), null);
+test('unknown statuses have no customer email', () => {
+  assert.equal(buildEmail({ ...base, status: 'shipped', orderStatus: 'shipped' }), null);
 });

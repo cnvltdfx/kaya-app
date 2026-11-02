@@ -23,12 +23,13 @@ before(async () => {
   for (const f of fs.readdirSync(MIGRATIONS).filter((f) => f.endsWith('.sql')).sort()) await q(fs.readFileSync(path.join(MIGRATIONS, f), 'utf8'));
 });
 
+// Stock as it is after checkout reserved the test orders' items.
 beforeEach(async () => {
   await q('SET FOREIGN_KEY_CHECKS = 0; TRUNCATE order_status_history; TRUNCATE order_items; TRUNCATE orders; TRUNCATE payments; TRUNCATE products; TRUNCATE users; SET FOREIGN_KEY_CHECKS = 1');
   await q("INSERT INTO users (id, email, name, created_at) VALUES ('usr_a', 'a@example.com', 'Ah Lian', UTC_TIMESTAMP(3))");
   await q(`INSERT INTO products (id, slug, name, category, price, stock, description, created_at) VALUES
     ('prd_pandan', 'pandan', 'Classic Pandan Kaya', 'classic', 12.00, 5, '', UTC_TIMESTAMP(3)),
-    ('prd_durian', 'durian', 'Musang King Durian Kaya', 'specialty', 20.00, 1, '', UTC_TIMESTAMP(3))`);
+    ('prd_durian', 'durian', 'Musang King Durian Kaya', 'specialty', 20.00, 0, '', UTC_TIMESTAMP(3))`);
 });
 
 after(async () => {
@@ -36,95 +37,121 @@ after(async () => {
   await conn.end();
 });
 
-// A queued order as the API would save it, with a payment row when paid.
-async function queuedOrder(id, lines, { paid = true } = {}) {
+// An order as the API saves it at checkout: stock already reserved, waiting for payment.
+async function awaitingPayment(id, lines) {
   await q(
     `INSERT INTO orders (id, user_id, email, market, currency, fulfilment, subtotal, total, total_sgd, payment_method, payment_status, status, created_at, updated_at)
-     VALUES (?, 'usr_a', 'a@example.com', 'SG', 'SGD', 'pickup', 32, 32, 32, ?, ?, 'queued', UTC_TIMESTAMP(3), UTC_TIMESTAMP(3))`,
-    [id, paid ? 'card' : 'paynow', paid ? 'paid' : 'pending'],
+     VALUES (?, 'usr_a', 'a@example.com', 'SG', 'SGD', 'pickup', 32, 32, 32, 'card', 'pending', 'pending_payment', UTC_TIMESTAMP(3), UTC_TIMESTAMP(3))`,
+    [id],
   );
   await q('INSERT INTO order_items (order_id, line_no, product_id, name, qty, unit_price_sgd, unit_price) VALUES ?',
     [lines.map(([productId, qty], n) => [id, n + 1, productId, productId, qty, 10, 10])]);
-  await q("INSERT INTO order_status_history (order_id, status, at) VALUES (?, 'queued', UTC_TIMESTAMP(3))", [id]);
-  if (paid) await q("INSERT INTO payments (id, order_id, user_id, method, amount, currency, reference, status, created_at) VALUES (?, ?, 'usr_a', 'card', 32, 'SGD', 'ref', 'paid', UTC_TIMESTAMP(3))", [`pmt_${id}`, id]);
+  await q("INSERT INTO order_status_history (order_id, status, at) VALUES (?, 'pending_payment', UTC_TIMESTAMP(3))", [id]);
+  await q("INSERT INTO payments (id, order_id, user_id, method, amount, currency, reference, status, created_at) VALUES (?, ?, 'usr_a', 'card', 32, 'SGD', 'cs_test', 'pending', UTC_TIMESTAMP(3))", [`pmt_${id}`, id]);
 }
 
 const stock = async () => Object.fromEntries((await q('SELECT id, stock FROM products')).map((p) => [p.id, p.stock]));
 const order = async (id) => (await q('SELECT status, payment_status FROM orders WHERE id = ?', [id]))[0];
+const payment = async (id) => (await q('SELECT status FROM payments WHERE order_id = ?', [id]))[0].status;
+const lastHistory = async (id) => (await q('SELECT status, note FROM order_status_history WHERE order_id = ? ORDER BY id DESC LIMIT 1', [id]))[0];
 
-test('a paid order with enough stock is confirmed and its stock taken', async () => {
-  await queuedOrder('KK1', [['prd_pandan', 2], ['prd_durian', 1]]);
-  const evt = await processOrder(tx, 'KK1');
+test('paid: the order is confirmed and the payment recorded, stock untouched', async () => {
+  await awaitingPayment('KK1', [['prd_pandan', 2], ['prd_durian', 1]]);
+  const evt = await processOrder(tx, 'KK1', 'paid');
 
-  assert.deepEqual(await stock(), { prd_pandan: 3, prd_durian: 0 });
   assert.deepEqual(await order('KK1'), { status: 'processing', payment_status: 'paid' });
+  assert.equal(await payment('KK1'), 'paid');
+  assert.deepEqual(await stock(), { prd_pandan: 5, prd_durian: 0 });
+  assert.deepEqual(await lastHistory('KK1'), { status: 'processing', note: 'order-worker' });
   assert.equal(evt.status, 'confirmed');
   assert.equal(evt.orderStatus, 'processing');
+  assert.equal(evt.paymentStatus, 'paid');
   assert.equal(evt.email, 'a@example.com');
   assert.equal(evt.customerName, 'Ah Lian');
   assert.equal(evt.total, 32);
   assert.equal(evt.items.length, 2);
-  const [last] = await q("SELECT status, note FROM order_status_history WHERE order_id = 'KK1' ORDER BY id DESC LIMIT 1");
-  assert.deepEqual(last, { status: 'processing', note: 'order-worker' });
 });
 
-test('an unpaid PayNow order takes stock and waits for payment', async () => {
-  await queuedOrder('KK2', [['prd_pandan', 1]], { paid: false });
-  const evt = await processOrder(tx, 'KK2');
+test('expired: the order is cancelled and its reserved stock released', async () => {
+  await awaitingPayment('KK2', [['prd_pandan', 2], ['prd_durian', 1]]);
+  const evt = await processOrder(tx, 'KK2', 'expired');
 
-  assert.deepEqual(await order('KK2'), { status: 'pending_payment', payment_status: 'pending' });
-  assert.equal((await stock()).prd_pandan, 4);
-  assert.equal(evt.status, 'confirmed');
-  assert.equal(evt.orderStatus, 'pending_payment');
-  assert.equal(evt.paymentStatus, 'pending');
+  assert.deepEqual(await order('KK2'), { status: 'cancelled', payment_status: 'cancelled' });
+  assert.equal(await payment('KK2'), 'failed');
+  assert.deepEqual(await stock(), { prd_pandan: 7, prd_durian: 1 });
+  assert.deepEqual(await lastHistory('KK2'), { status: 'cancelled', note: 'order-worker: payment expired' });
+  assert.equal(evt.status, 'cancelled');
 });
 
-test('one short line rejects the whole order, keeps all stock and refunds', async () => {
-  await queuedOrder('KK3', [['prd_pandan', 2], ['prd_durian', 2]]);
-  const evt = await processOrder(tx, 'KK3');
-
-  assert.deepEqual(await stock(), { prd_pandan: 5, prd_durian: 1 });
-  assert.deepEqual(await order('KK3'), { status: 'rejected', payment_status: 'refunded' });
-  assert.equal((await q("SELECT status FROM payments WHERE order_id = 'KK3'"))[0].status, 'refunded');
-  assert.equal(evt.status, 'rejected');
-  assert.equal(evt.reason, 'prd_durian is out of stock');
-  assert.equal(evt.paymentStatus, 'refunded');
-});
-
-test('a redelivered message re-sends the event without taking stock again', async () => {
-  await queuedOrder('KK4', [['prd_pandan', 1]]);
-  const first = await processOrder(tx, 'KK4');
-  const again = await processOrder(tx, 'KK4');
+test('a redelivered paid message re-sends the event without changing anything', async () => {
+  await awaitingPayment('KK3', [['prd_pandan', 1]]);
+  const first = await processOrder(tx, 'KK3', 'paid');
+  const again = await processOrder(tx, 'KK3', 'paid');
 
   assert.deepEqual(again, first);
-  assert.equal((await stock()).prd_pandan, 4);
-  assert.equal((await q("SELECT COUNT(*) AS n FROM order_status_history WHERE order_id = 'KK4'"))[0].n, 2);
+  assert.equal((await q("SELECT COUNT(*) AS n FROM order_status_history WHERE order_id = 'KK3'"))[0].n, 2);
 });
 
-test('a redelivered rejection re-sends the same reason', async () => {
-  await queuedOrder('KK5', [['prd_durian', 3]]);
-  const first = await processOrder(tx, 'KK5');
-  assert.deepEqual(await processOrder(tx, 'KK5'), first);
+test('a redelivered expired message does not release the stock twice', async () => {
+  await awaitingPayment('KK4', [['prd_pandan', 2]]);
+  const first = await processOrder(tx, 'KK4', 'expired');
+  const again = await processOrder(tx, 'KK4', 'expired');
+
+  assert.deepEqual(again, first);
+  assert.equal((await stock()).prd_pandan, 7);
 });
 
-test('a redelivered message is ignored once staff have moved the order on', async () => {
-  await queuedOrder('KK6', [['prd_pandan', 1]]);
-  await processOrder(tx, 'KK6');
-  await q("UPDATE orders SET status = 'cancelled' WHERE id = 'KK6'");
-  await q("INSERT INTO order_status_history (order_id, status, note, at) VALUES ('KK6', 'cancelled', 'Cancelled by customer', UTC_TIMESTAMP(3))");
+test('paid after the customer cancelled: order unchanged, staff told to refund', async () => {
+  await awaitingPayment('KK5', [['prd_pandan', 1]]);
+  await q("UPDATE orders SET status = 'cancelled', payment_status = 'cancelled' WHERE id = 'KK5'");
+  await q("INSERT INTO order_status_history (order_id, status, note, at) VALUES ('KK5', 'cancelled', 'Cancelled by customer', UTC_TIMESTAMP(3))");
+  const evt = await processOrder(tx, 'KK5', 'paid');
 
-  assert.equal(await processOrder(tx, 'KK6'), null);
+  assert.deepEqual(await order('KK5'), { status: 'cancelled', payment_status: 'cancelled' });
+  assert.equal(evt.status, 'rejected');
+  assert.match(evt.reason, /refund it manually/);
+});
+
+test('paid after checkout had already expired: staff told to refund', async () => {
+  await awaitingPayment('KK6', [['prd_pandan', 1]]);
+  await processOrder(tx, 'KK6', 'expired');
+  const evt = await processOrder(tx, 'KK6', 'paid');
+
+  assert.equal(evt.status, 'rejected');
+  assert.equal((await order('KK6')).status, 'cancelled');
+});
+
+test('a late message is ignored once staff have moved the order on', async () => {
+  await awaitingPayment('KK7', [['prd_pandan', 1]]);
+  await processOrder(tx, 'KK7', 'paid');
+  await q("UPDATE orders SET status = 'shipped' WHERE id = 'KK7'");
+  await q("INSERT INTO order_status_history (order_id, status, at) VALUES ('KK7', 'shipped', UTC_TIMESTAMP(3))");
+
+  assert.equal(await processOrder(tx, 'KK7', 'paid'), null);
+  assert.equal(await processOrder(tx, 'KK7', 'expired'), null);
 });
 
 test('a missing order throws, so SQS retries it', async () => {
-  await assert.rejects(processOrder(tx, 'KK404'), /not found/);
+  await assert.rejects(processOrder(tx, 'KK404', 'paid'), /not found/);
 });
 
-test('two orders racing for the last jar: exactly one gets it', async () => {
-  await queuedOrder('KK7', [['prd_durian', 1]]);
-  await queuedOrder('KK8', [['prd_durian', 1]]);
-  const evts = await Promise.all([processOrder(tx, 'KK7'), processOrder(tx, 'KK8')]);
+test('an unknown outcome throws and changes nothing', async () => {
+  await awaitingPayment('KK8', [['prd_pandan', 1]]);
+  await assert.rejects(processOrder(tx, 'KK8', 'refunded'), /Unknown outcome/);
+  assert.equal((await order('KK8')).status, 'pending_payment');
+});
 
-  assert.deepEqual(evts.map((e) => e.status).sort(), ['confirmed', 'rejected']);
-  assert.equal((await stock()).prd_durian, 0);
+test('paid and expired racing for one order: whichever commits first settles it', async () => {
+  await awaitingPayment('KK9', [['prd_pandan', 1]]);
+  const [paid, expired] = await Promise.all([processOrder(tx, 'KK9', 'paid'), processOrder(tx, 'KK9', 'expired')]);
+
+  if ((await order('KK9')).status === 'processing') {
+    assert.equal(paid.status, 'confirmed');
+    assert.equal(expired, null);
+    assert.equal((await stock()).prd_pandan, 5);
+  } else {
+    assert.equal(expired.status, 'cancelled');
+    assert.equal(paid.status, 'rejected');
+    assert.equal((await stock()).prd_pandan, 6);
+  }
 });
