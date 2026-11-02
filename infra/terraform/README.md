@@ -11,12 +11,6 @@ It's sized for an AWS **Free plan** account, so it differs from the architecture
 
 After upgrading to a paid plan, you can switch back to the diagram's design.
 
-## Before you start: run one instance
-
-The app still keeps its data in a JSON file inside each container (`backend/src/lib/db.js`), not in the MySQL database. If more than one instance runs, each has its own users, sessions, carts and stock. Logins and MFA then fail at random, because the next request can land on a different instance. **Until the data layer moves to Aurora, run exactly one instance** (step 2 shows how).
-
-Data also resets whenever the container restarts or the instance is replaced: the app seeds fresh demo data on startup. That's fine for a demo.
-
 ## 1. Install the tools
 
 - An AWS account, and the **AWS CLI v2** signed in with admin rights (`aws configure` or `aws configure sso`). Check with `aws sts get-caller-identity`.
@@ -45,7 +39,7 @@ cd infra/terraform
 cp terraform.tfvars.example terraform.tfvars
 ```
 
-Edit `terraform.tfvars` for a single-instance demo:
+All app data lives in RDS, so any number of instances can run. For a cheap demo or test, run one. Edit `terraform.tfvars`:
 
 ```hcl
 asg_min_size              = 1
@@ -100,15 +94,11 @@ terraform output -raw alb_dns_name
 ```
 
 - Health check: `http://<alb_dns_name>/health` should return `{"status":"ok"}`.
-- Shop: `http://<alb_dns_name>/`
+- API: `http://<alb_dns_name>/api/...`. The ALB serves only the API, so the root URL returns `{"error":"Not found."}`. That's expected: the storefront (`frontend/`) isn't hosted in AWS until CloudFront and S3 are set up. To click through it meanwhile, run the local helper `backend/scripts/ui-proxy.js` (on the `fix/deploy-followups` branch until it's merged), which serves `frontend/` and forwards `/api` to the ALB.
 
 The first instance takes a few minutes to become healthy after the apply finishes.
 
-**Demo accounts** (see the main README): `demo@koolkaya.sg` / `Demo@1234` logs straight in. Staff and admin accounts need an MFA code. The containers run with `NODE_ENV=production`, so the code isn't shown on screen. Read it on the instance instead (step 6):
-
-```sh
-sudo docker exec kaya-api cat /app/data/db.json | grep -o 'verification code is [0-9]*' | tail -1
-```
+**Demo accounts** (seeded into an empty database; see `backend/DATABASE.md`): `demo@koolkaya.sg` / `Demo@1234`, `staff@koolkaya.sg` / `Staff@1234` and `admin@koolkaya.sg` / `Admin@1234`. MFA is off for all three, so the back office works in AWS too.
 
 ## 6. Get a shell on the instance (no SSH)
 
@@ -154,7 +144,7 @@ EventBridge Scheduler → report-generator Lambda (in the VPC) → API server �
   - Once the data moves to Aurora, the Lambda should query it directly instead.
 - **QuickSight feed:** each sales report also rewrites `reports/quicksight/sales.csv` with every paid order to date. The QuickSight dataset reads only that file, so overlapping daily, weekly and manual reports aren't double-counted. SPICE refreshes it daily at 00:30.
 
-Back office → Reports works as before and lists the scheduled runs too. With more than one instance, the reports cover only the instance the Lambda picked (see "Before you start").
+Back office → Reports works as before and lists the scheduled runs too. Every instance reads the same database, so the reports are complete whichever instance the Lambda picks.
 
 ### Deploy the report generator
 
@@ -209,7 +199,9 @@ ses_from_address  = "orders@example.com"  # SES emails a verification link to th
 staff_alert_email = "staff@example.com"   # SNS emails a subscription confirmation; click it
 ```
 
-New SES accounts are in the **sandbox**: they can only send to verified addresses until you request production access in the SES console.
+New SES accounts are in the **sandbox**: they can only send to verified addresses until you request production access in the SES console. So while testing, place orders from an app account whose email is verified too (using the sender address for both is simplest).
+
+A Gmail (or other webmail) sender works but lands in **spam**: SES can't sign mail as `gmail.com`, so it fails the recipient's DMARC check. For reliable delivery, verify a domain you control in SES with Easy DKIM (three DNS records) and send from an address on it. The staff alerts come from SNS's own address and arrive normally.
 
 Smoke test: place an order in the app with the test card `4242 4242 4242 4242`. The order page shows "Confirming your payment…", then "Processing" a few seconds later. Then check both Lambdas' logs, and send a test email straight through SNS:
 
@@ -230,7 +222,6 @@ aws logs tail /aws/lambda/kool-kaya-kitchen-email-sender --since 5m
 | Can't connect with Session Manager | Wait about 5 minutes after boot for the instance to register. It needs outbound access through the NAT instance. |
 | Instances can't pull the image or register with SSM | Check that the NAT instance (`terraform output nat_instance_id`) is running. If it was stopped or replaced, reboot the API instances. |
 | `FreeTierRestrictionError` | A setting exceeds Free plan limits. Paste the error and adjust that variable; for example, `db_backup_retention_days` must stay low. |
-| Logged out or "cart empty" at random | More than one instance is running. See "Before you start". |
 | Report Lambda fails with `No healthy in-service instance` | The API instance isn't healthy yet. Check the ASG and the ALB target health. |
 | Report Lambda fails with `fetch failed` / `ECONNREFUSED` | The instance runs an image without the report port. Push the new image and start an instance refresh (step 7). |
 | QuickSight data source fails to create | `reports/quicksight/sales.csv` doesn't exist yet (generate the first reports), or the new IAM role hadn't propagated. Run `terraform apply` again. |
