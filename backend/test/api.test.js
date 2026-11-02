@@ -191,3 +191,54 @@ test('private report port runs scheduled reports and refreshes the QuickSight fe
   assert.ok(feed.length > 160); // every paid order line, not just the last day
   assert.equal((await call('POST', '/reports', { body: { type: 'sales' } })).status, 404); // not on the public port
 });
+
+// With ORDER_QUEUE_URL set, a paid order is handed to the order worker instead of settled here.
+// Checkouts come from their own client IP so the earlier tests' checkout rate limit doesn't apply.
+const queueClient = { 'x-forwarded-for': '10.0.0.7' };
+async function withQueue(send, fn) {
+  const orderQueue = require('../src/lib/orderQueue');
+  const original = orderQueue.sendOutcome;
+  orderQueue.sendOutcome = send;
+  try { await fn(); } finally { orderQueue.sendOutcome = original; }
+}
+
+test('queue mode: a card checkout is queued for the order worker as paid', async () => {
+  const sent = [];
+  await withQueue(async (...args) => { sent.push(args); return true; }, async () => {
+    const token = await login('demo@koolkaya.sg', 'Demo@1234');
+    await call('POST', '/api/cart/items', { token, body: { productId: 'prd_coconut-jam-original', qty: 1 } });
+    const r = await call('POST', '/api/orders/checkout', { token, headers: queueClient, body: { fulfilment: 'delivery', address: addr, payment: card } });
+    assert.equal(r.status, 201);
+    assert.equal(r.data.order.status, 'pending_payment');
+    assert.deepEqual(sent, [[r.data.order.id, 'paid']]);
+    const receipt = await call('GET', `/api/payments/${r.data.order.id}/receipt`, { token });
+    assert.equal(receipt.data.payment.status, 'paid');
+  });
+});
+
+test('queue mode: a PayNow confirmation is queued once', async () => {
+  const sent = [];
+  await withQueue(async (...args) => { sent.push(args); return true; }, async () => {
+    const token = await login('demo@koolkaya.sg', 'Demo@1234');
+    await call('POST', '/api/cart/items', { token, body: { productId: 'prd_coconut-jam-original', qty: 1 } });
+    const r = await call('POST', '/api/orders/checkout', { token, headers: queueClient, body: { fulfilment: 'delivery', address: addr, payment: { method: 'paynow' } } });
+    assert.equal(r.data.order.status, 'pending_payment');
+    assert.equal(sent.length, 0);
+    const id = r.data.order.id;
+    const ok = await call('POST', `/api/payments/${id}/paynow/confirm`, { token });
+    assert.equal(ok.status, 200);
+    assert.equal(ok.data.order.status, 'pending_payment'); // the worker confirms it next
+    assert.equal((await call('POST', `/api/payments/${id}/paynow/confirm`, { token })).status, 409);
+    assert.deepEqual(sent, [[id, 'paid']]);
+  });
+});
+
+test('queue mode: a failed send still returns the paid order', async () => {
+  await withQueue(async () => { throw new Error('SQS unavailable'); }, async () => {
+    const token = await login('demo@koolkaya.sg', 'Demo@1234');
+    await call('POST', '/api/cart/items', { token, body: { productId: 'prd_coconut-jam-original', qty: 1 } });
+    const r = await call('POST', '/api/orders/checkout', { token, headers: queueClient, body: { fulfilment: 'delivery', address: addr, payment: card } });
+    assert.equal(r.status, 201);
+    assert.equal(r.data.order.status, 'pending_payment');
+  });
+});

@@ -90,11 +90,11 @@ router.post('/:orderId/paynow/confirm', requireAuth, async (req, res) => {
   const order = await orders.getOrder(req.params.orderId);
   if (!order || order.userId !== req.user.id) return res.status(404).json({ error: 'Order not found.' });
   const notAwaiting = { error: 'This order is not awaiting payment.' };
-  if (order.paymentStatus !== 'pending') return res.status(409).json(notAwaiting);
-  const updated = await orders.markPaid(order, req.user);
-  if (!updated) return res.status(409).json(notAwaiting);
-  await db.query("UPDATE payments SET status = 'paid', paid_at = ? WHERE order_id = ? AND status = 'pending'", [db.ts(Date.now()), order.id]);
-  res.json({ order: updated });
+  if (order.status !== 'pending_payment') return res.status(409).json(notAwaiting);
+  // Record the transfer first; a second confirmation finds no pending payment and stops here.
+  const r = await db.query("UPDATE payments SET status = 'paid', paid_at = ? WHERE order_id = ? AND status = 'pending'", [db.ts(Date.now()), order.id]);
+  if (!r.affectedRows) return res.status(409).json(notAwaiting);
+  res.json({ order: await orders.paymentReceived(order, req.user) });
 });
 
 router.get('/:orderId/receipt', requireAuth, async (req, res) => {

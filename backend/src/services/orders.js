@@ -7,6 +7,7 @@ const { requireAuth, rateLimit } = require('../lib/security');
 const { priceCart } = require('../lib/pricing');
 const { market } = require('../lib/markets');
 const { log, raiseAlert } = require('../lib/observability');
+const orderQueue = require('../lib/orderQueue');
 const payments = require('./payments');
 const notifications = require('./notifications');
 const cart = require('./cart');
@@ -101,6 +102,25 @@ async function markPaid(order, user) {
   return updated;
 }
 
+// The payment for a `pending_payment` order has gone through. With a queue configured, the order
+// worker confirms it (and emails the customer) a moment later; otherwise it is confirmed here.
+// Returns the order as it stands now.
+async function paymentReceived(order, user) {
+  try {
+    if (await orderQueue.sendOutcome(order.id, 'paid')) {
+      log('info', 'order.queued', { orderId: order.id, outcome: 'paid' });
+      return order;
+    }
+  } catch (err) {
+    // The customer has paid, so don't fail the request: the order waits in `pending_payment`
+    // with a paid payment row until someone re-sends it.
+    log('error', 'order.queue_failed', { orderId: order.id, error: err.message });
+    raiseAlert('OrderQueueSendFailed', `Order ${order.id} was paid but could not be queued: ${err.message}`);
+    return order;
+  }
+  return (await markPaid(order, user)) || getOrder(order.id);
+}
+
 // Cancels an order still in `order.status`: returns its stock, refunds any payment.
 async function cancelOrder(order, note) {
   const updated = await setStatus(order, 'cancelled', note, { patch: { payment_status: order.paymentStatus === 'paid' ? 'refunded' : 'cancelled' } });
@@ -156,17 +176,19 @@ router.post('/checkout', checkoutLimiter, async (req, res) => {
     return res.status(402).json({ error: pmt.error || 'Payment failed.' });
   }
 
+  // Saved as awaiting payment even when the charge already went through: paymentReceived below
+  // (or the order worker it queues for) moves it on, the same way a PayNow confirmation does.
   const now = Date.now();
   const order = {
     id: orderId, userId: user.id, email: user.email, market: m.code, currency: quote.currency,
     items: orderItems, fulfilment, address, pickupSlot,
     subtotal: quote.subtotal, discount: quote.discount, shipping: quote.shipping, total: quote.total, totalSgd: quote.totalSgd,
     promoCode: quote.promo?.code || null, paymentMethod: method,
-    paymentStatus: pmt.status === 'paid' ? 'paid' : 'pending',
+    paymentStatus: 'pending',
     paymentRef: pmt.reference, paynow: pmt.status === 'pending' ? { ref: pmt.paynowRef, uen: pmt.uen } : null,
-    status: pmt.status === 'paid' ? 'processing' : 'pending_payment',
-    statusHistory: [{ status: 'placed', at: now }, { status: pmt.status === 'paid' ? 'processing' : 'pending_payment', at: now }],
-    idempotencyKey: idemKey, createdAt: now, paidAt: pmt.status === 'paid' ? now : null,
+    status: 'pending_payment',
+    statusHistory: [{ status: 'placed', at: now }, { status: 'pending_payment', at: now }],
+    idempotencyKey: idemKey, createdAt: now, paidAt: null,
   };
   try {
     await db.tx(async (t) => {
@@ -183,8 +205,9 @@ router.post('/checkout', checkoutLimiter, async (req, res) => {
     }
     throw err;
   }
-  const saved = await getOrder(orderId);
-  await notifications.notifyOrder(saved, user, pmt.status === 'paid' ? 'placed' : 'awaiting_payment');
+  let saved = await getOrder(orderId);
+  if (pmt.status === 'paid') saved = await paymentReceived(saved, user);
+  else await notifications.notifyOrder(saved, user, 'awaiting_payment');
   log('info', 'order.placed', { orderId, market: m.code, totalSgd: quote.totalSgd, method });
   res.status(201).json({ order: saved });
 });
@@ -215,4 +238,4 @@ router.post('/:id/cancel', async (req, res) => {
 });
 
 module.exports = router;
-Object.assign(module.exports, { findOrders, getOrder, setStatus, markPaid, cancelOrder, nextOrderId, insertOrder, PICKUP_SLOTS });
+Object.assign(module.exports, { findOrders, getOrder, setStatus, markPaid, paymentReceived, cancelOrder, nextOrderId, insertOrder, PICKUP_SLOTS });

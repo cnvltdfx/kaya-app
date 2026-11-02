@@ -41,18 +41,19 @@ resource "aws_launch_template" "app" {
   }
 
   user_data = base64encode(templatefile("${path.module}/user_data.sh.tftpl", {
-    region        = var.aws_region
-    registry      = split("/", aws_ecr_repository.app.repository_url)[0]
-    image         = "${aws_ecr_repository.app.repository_url}:${var.image_tag}"
-    app_port      = var.app_port
-    reports_port  = local.reports_port
-    s3_bucket     = aws_s3_bucket.reports.bucket
-    kms_key_id    = aws_kms_key.main.arn
-    db_host       = aws_db_instance.main.address
-    db_name       = var.db_name
-    db_secret_arn = aws_db_instance.main.master_user_secret[0].secret_arn
-    asg_name      = local.asg_name
-    hook_name     = local.launch_hook_name
+    region          = var.aws_region
+    registry        = split("/", aws_ecr_repository.app.repository_url)[0]
+    image           = "${aws_ecr_repository.app.repository_url}:${var.image_tag}"
+    app_port        = var.app_port
+    reports_port    = local.reports_port
+    s3_bucket       = aws_s3_bucket.reports.bucket
+    kms_key_id      = aws_kms_key.main.arn
+    db_host         = aws_db_instance.main.address
+    db_name         = var.db_name
+    db_secret_arn   = aws_db_instance.main.master_user_secret[0].secret_arn
+    order_queue_url = aws_sqs_queue.orders.url
+    asg_name        = local.asg_name
+    hook_name       = local.launch_hook_name
   }))
 
   tag_specifications {

@@ -532,7 +532,11 @@
         ${['pending_payment', 'processing'].includes(o.status) && o.userId === S.user?.id ? `<button class="btn btn-danger btn-sm" id="cancel-order">${esc(t('cancelOrder'))}</button>` : ''}
         <button class="btn btn-ghost btn-sm" id="print-receipt">${esc(t('print'))}</button></div></div>
       <p class="muted">${fmtDate(o.createdAt, undefined, tz)} · ${statusPill(o.status)}</p>
-      ${o.status === 'pending_payment' ? `
+      ${o.status === 'pending_payment' && payment?.status === 'paid' ? `
+        <div class="card" style="margin-bottom:18px">
+          <h3>Confirming your payment…</h3>
+          <p class="muted small" style="margin:0">We've received your payment and are confirming the order. This page updates in a moment.</p>
+        </div>` : o.status === 'pending_payment' ? `
         <div class="card" style="margin-bottom:18px">
           <h3>Pay with PayNow</h3>
           <div class="paynow-box">${qrSvg(o.paynow?.ref || o.id)}
@@ -564,6 +568,10 @@
       </div>
       <p class="no-print" style="margin-top:20px"><a href="#/account/orders">← ${esc(t('orderHistory'))}</a></p>`;
     document.getElementById('print-receipt').onclick = () => window.print();
+    // Paid but not yet confirmed: the order worker picks it up from the queue within seconds.
+    if (o.status === 'pending_payment' && payment?.status === 'paid') {
+      setTimeout(() => { if (location.hash.startsWith(`#/order/${id}`)) viewOrder(id, q); }, 2000);
+    }
     const sim = document.getElementById('sim-paynow');
     if (sim) sim.onclick = async () => {
       try { await api('POST', `/api/payments/${o.id}/paynow/confirm`); toast('Payment received!', 'ok'); viewOrder(id, new URLSearchParams('new=1')); } catch (e) { toast(e.message, 'error'); }

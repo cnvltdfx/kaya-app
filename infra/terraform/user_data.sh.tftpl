@@ -31,6 +31,7 @@ ExecStart=/usr/bin/docker run --rm --name kaya-api -p ${app_port}:${app_port} -p
   -e DB_HOST=${db_host} \
   -e DB_NAME=${db_name} \
   -e DB_SECRET_ARN=${db_secret_arn} \
+  -e ORDER_QUEUE_URL=${order_queue_url} \
   ${image}
 ExecStop=/usr/bin/docker stop kaya-api
 
