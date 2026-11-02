@@ -194,6 +194,14 @@ Terraform creates the QuickSight data source, dataset and daily refresh only onc
 
 `orders.tf` creates the decoupled order pipeline: an SQS order queue with a dead-letter queue, an order-worker Lambda, an SNS order-events topic, an email-sender Lambda, and an optional SES sender identity. The Lambda code in `infra/lambdas/` is a stub that only logs; the app doesn't send to the queue yet. It doesn't use the VPC, DB or project KMS key, so it can be applied on its own (see below); the worker moves into the VPC once the DB exists.
 
+The order worker bundles `mysql2`, so install it before every apply (Terraform zips the folder as it is):
+
+```powershell
+cd ..\lambdas\order-worker; npm ci --omit=dev; cd ..\..\terraform
+```
+
+Its tests run against local MySQL (`docker compose up -d` in `backend/`): `cd infra/lambdas/order-worker && npm install && npm test`.
+
 Apply just this part:
 
 ```powershell

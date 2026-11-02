@@ -51,6 +51,7 @@ data "archive_file" "order_worker" {
   type        = "zip"
   source_dir  = "${path.module}/../lambdas/order-worker"
   output_path = "${path.module}/build/order-worker.zip"
+  excludes    = ["test"] # node_modules (mysql2) is included: run `npm ci --omit=dev` there first
 }
 
 data "archive_file" "email_sender" {

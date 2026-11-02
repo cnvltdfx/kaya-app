@@ -1,19 +1,34 @@
-// Order worker (placeholder): triggered by the SQS order queue.
-// Env: ORDER_EVENTS_TOPIC_ARN (DB_HOST, DB_NAME, DB_SECRET_ARN once it moves into the VPC).
+// Order worker: triggered by the SQS order queue. Each message is {"orderId":"KK100123"} for an
+// order the API saved with status `queued`. See order.mjs for what happens to it.
+// Env: ORDER_EVENTS_TOPIC_ARN, DB_HOST, DB_NAME, DB_SECRET_ARN.
+import { SNSClient, PublishCommand } from '@aws-sdk/client-sns';
+import { tx } from './db.mjs';
+import { processOrder } from './order.mjs';
+
+const sns = new SNSClient({});
+
+// `status` (confirmed | rejected) is also a message attribute, for the staff "rejected" filter.
+async function publish(evt) {
+  await sns.send(new PublishCommand({
+    TopicArn: process.env.ORDER_EVENTS_TOPIC_ARN,
+    Message: JSON.stringify(evt),
+    MessageAttributes: { status: { DataType: 'String', StringValue: evt.status } },
+  }));
+}
+
 export const handler = async (event) => {
   const batchItemFailures = [];
 
   for (const record of event.Records) {
     try {
-      const order = JSON.parse(record.body);
-      console.log(JSON.stringify({ msg: 'order.received', messageId: record.messageId, order }));
+      const { orderId } = JSON.parse(record.body);
+      if (typeof orderId !== 'string' || !/^KK\d+$/.test(orderId)) throw new Error('Message has no valid orderId.');
 
-      // TODO: read DB credentials from Secrets Manager (DB_SECRET_ARN).
-      // TODO: confirm the order and stock in one DB transaction.
-      // TODO: publish { orderId, status } to ORDER_EVENTS_TOPIC_ARN, with a `status`
-      //       message attribute so the staff email filter ("rejected") matches.
+      const evt = await processOrder(tx, orderId);
+      if (evt) await publish(evt);
+      console.log(JSON.stringify({ msg: evt ? 'order.processed' : 'order.skipped', messageId: record.messageId, orderId, status: evt?.orderStatus }));
     } catch (err) {
-      console.error(JSON.stringify({ msg: 'order.failed', messageId: record.messageId, error: err.message }));
+      console.error(JSON.stringify({ msg: 'order.failed', messageId: record.messageId, error: err.message, code: err.code }));
       batchItemFailures.push({ itemIdentifier: record.messageId });
     }
   }

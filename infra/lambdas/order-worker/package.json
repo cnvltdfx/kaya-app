@@ -1,0 +1,16 @@
+{
+  "name": "kool-kaya-kitchen-order-worker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "SQS -> order transaction in MySQL -> SNS order event. The AWS SDK comes with the Lambda runtime.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "mysql2": "^3.24.6"
+  }
+}
