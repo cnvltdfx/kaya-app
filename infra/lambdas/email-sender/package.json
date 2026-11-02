@@ -1,0 +1,13 @@
+{
+  "name": "kool-kaya-kitchen-email-sender",
+  "version": "1.0.0",
+  "private": true,
+  "description": "SNS order event -> customer email via SES. No dependencies: the AWS SDK comes with the Lambda runtime.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

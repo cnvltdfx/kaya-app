@@ -38,13 +38,13 @@ export async function processOrder(tx, orderId) {
       await conn.query('ROLLBACK TO SAVEPOINT stock');
       const reason = `${short.name} is out of stock`;
       await conn.query(
-        `UPDATE orders SET status = 'rejected', payment_status = IF(payment_status = 'paid', 'refunded', 'cancelled'),
-           updated_at = UTC_TIMESTAMP(3) WHERE id = ?`,
+        "UPDATE orders SET status = 'rejected', payment_status = IF(payment_status = 'paid', 'refunded', 'cancelled'), updated_at = UTC_TIMESTAMP(3) WHERE id = ?",
         [orderId],
       );
       await conn.query("UPDATE payments SET status = 'refunded', refunded_at = UTC_TIMESTAMP(3) WHERE order_id = ? AND status = 'paid'", [orderId]);
       await history(conn, orderId, 'rejected', `${WORKER_NOTE}: ${reason}`);
-      return orderEvent({ ...order, status: 'rejected' }, items, reason);
+      const paymentStatus = order.payment_status === 'paid' ? 'refunded' : 'cancelled';
+      return orderEvent({ ...order, status: 'rejected', payment_status: paymentStatus }, items, reason);
     }
 
     const next = order.payment_status === 'paid' ? 'processing' : 'pending_payment';
@@ -64,6 +64,7 @@ function orderEvent(order, items, reason) {
     orderId: order.id,
     status: order.status === 'rejected' ? 'rejected' : 'confirmed',
     orderStatus: order.status,
+    paymentStatus: order.payment_status,
     ...(reason ? { reason } : {}),
     email: order.email,
     customerName: order.customer_name,

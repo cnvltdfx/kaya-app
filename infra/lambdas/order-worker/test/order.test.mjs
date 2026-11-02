@@ -76,6 +76,7 @@ test('an unpaid PayNow order takes stock and waits for payment', async () => {
   assert.equal((await stock()).prd_pandan, 4);
   assert.equal(evt.status, 'confirmed');
   assert.equal(evt.orderStatus, 'pending_payment');
+  assert.equal(evt.paymentStatus, 'pending');
 });
 
 test('one short line rejects the whole order, keeps all stock and refunds', async () => {
@@ -87,6 +88,7 @@ test('one short line rejects the whole order, keeps all stock and refunds', asyn
   assert.equal((await q("SELECT status FROM payments WHERE order_id = 'KK3'"))[0].status, 'refunded');
   assert.equal(evt.status, 'rejected');
   assert.equal(evt.reason, 'prd_durian is out of stock');
+  assert.equal(evt.paymentStatus, 'refunded');
 });
 
 test('a redelivered message re-sends the event without taking stock again', async () => {

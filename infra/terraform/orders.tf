@@ -58,6 +58,7 @@ data "archive_file" "email_sender" {
   type        = "zip"
   source_dir  = "${path.module}/../lambdas/email-sender"
   output_path = "${path.module}/build/email-sender.zip"
+  excludes    = ["test"]
 }
 
 # ---- Order worker: SQS -> confirm order in the DB -> publish order event

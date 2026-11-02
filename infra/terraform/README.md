@@ -222,7 +222,9 @@ Smoke test after `terraform apply`:
 ```sh
 aws sqs send-message --queue-url "$(terraform output -raw order_queue_url)" --message-body '{"orderId":"KK100001"}'
 aws logs tail /aws/lambda/kool-kaya-kitchen-order-worker --since 5m
-aws sns publish --topic-arn "$(terraform output -raw order_events_topic_arn)" --message '{"orderId":"KK100001","status":"confirmed"}'
+aws sns publish --topic-arn "$(terraform output -raw order_events_topic_arn)" \
+  --message '{"orderId":"KK100001","status":"confirmed","orderStatus":"processing","paymentStatus":"paid","email":"you@example.com","customerName":"Test","currency":"SGD","total":12,"items":[{"name":"Classic Pandan Kaya","qty":1}]}' \
+  --message-attributes '{"status":{"DataType":"String","StringValue":"confirmed"}}'
 aws logs tail /aws/lambda/kool-kaya-kitchen-email-sender --since 5m
 ```
 
