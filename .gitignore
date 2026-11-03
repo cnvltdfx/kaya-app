@@ -4,3 +4,6 @@ reports/
 .env
 .claude/
 .DS_Store
+
+# Terraform plan files can hold account and resource details
+*.tfplan
