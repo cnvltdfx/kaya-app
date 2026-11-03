@@ -527,7 +527,7 @@
     const cancelled = o.status === 'cancelled';
     const methodLabel = { card: payment?.brand ? `${payment.brand}${payment.last4 ? ' •••• ' + payment.last4 : ''}` : t('card'), paynow: 'PayNow', applepay: 'Apple Pay' }[o.paymentMethod];
     app.innerHTML = `
-      ${q.get('new') && o.status !== 'pending_payment' ? `<div class="alert alert-ok no-print">✓ ${esc(t('thankYou'))} A confirmation email${S.user?.phone ? ' and SMS have' : ' has'} been sent.</div>` : ''}
+      ${q.get('new') && !['pending_payment', 'cancelled'].includes(o.status) ? `<div class="alert alert-ok no-print">✓ ${esc(t('thankYou'))} A confirmation email${S.user?.phone ? ' and SMS have' : ' has'} been sent.</div>` : ''}
       <div class="admin-head"><h1 style="margin:0">Order ${esc(o.id)}</h1><div class="no-print" style="display:flex;gap:8px">
         ${['pending_payment', 'processing'].includes(o.status) && o.userId === S.user?.id ? `<button class="btn btn-danger btn-sm" id="cancel-order">${esc(t('cancelOrder'))}</button>` : ''}
         <button class="btn btn-ghost btn-sm" id="print-receipt">${esc(t('print'))}</button></div></div>
