@@ -145,7 +145,7 @@ resource "aws_s3_bucket_policy" "frontend" {
 # The storefront files, uploaded on apply. Content types are set here rather than guessed by the
 # uploader (the AWS CLI on Windows can label .js as text/plain, which browsers refuse to run).
 resource "aws_s3_object" "frontend" {
-  for_each = fileset(local.frontend_dir, "**")
+  for_each = setsubtract(fileset(local.frontend_dir, "**"), ["config.js"])
 
   bucket        = aws_s3_bucket.frontend.id
   key           = each.value
@@ -153,6 +153,26 @@ resource "aws_s3_object" "frontend" {
   source_hash   = filemd5("${local.frontend_dir}/${each.value}")
   content_type  = lookup(local.frontend_content_types, lower(regex("[^.]*$", each.value)), "application/octet-stream")
   cache_control = lookup(local.frontend_cache_control, each.value, startswith(each.value, "img/") ? "public, max-age=86400" : "public, max-age=300")
+}
+
+# config.js is written here instead of copied from frontend/, so the storefront knows this deployment's
+# settings. The PayNow countdown uses the same timeout as the order expirer.
+resource "aws_s3_object" "frontend_config" {
+  bucket        = aws_s3_bucket.frontend.id
+  key           = "config.js"
+  content_type  = local.frontend_content_types.js
+  cache_control = local.frontend_cache_control["config.js"]
+  content       = <<-JS
+    window.KK_CONFIG = {
+      apiBase: '',
+      paymentTimeoutMinutes: ${var.order_payment_timeout_minutes},
+    };
+  JS
+}
+
+moved {
+  from = aws_s3_object.frontend["config.js"]
+  to   = aws_s3_object.frontend_config
 }
 
 # ---- CloudFront

@@ -519,7 +519,10 @@
     return `<svg viewBox="0 0 ${n} ${n}" fill="#7c1f7d" shape-rendering="crispEdges" role="img" aria-label="PayNow QR code">${cells}${fp(0, 0)}${fp(n - 7, 0)}${fp(0, n - 7)}</svg>`;
   }
 
+  let orderWatch = null;
+
   async function viewOrder(id, q) {
+    clearInterval(orderWatch);
     const { order: o, payment } = await api('GET', `/api/payments/${encodeURIComponent(id)}/receipt`);
     const tz = S.config.markets[o.market].timeZone;
     const flow = o.fulfilment === 'pickup' ? ['placed', 'processing', 'ready_for_pickup', 'delivered'] : ['placed', 'processing', 'shipped', 'delivered'];
@@ -542,6 +545,7 @@
           <div class="paynow-box">${qrSvg(o.paynow?.ref || o.id)}
             <div><p style="margin:0">Amount: <strong>${money(o.total, o.currency)}</strong></p><p style="margin:4px 0">UEN: <span class="mono">${esc(o.paynow?.uen)}</span></p><p style="margin:4px 0">Reference: <span class="mono">${esc(o.paynow?.ref)}</span></p>
             <p class="muted small">Scan with any Singapore banking app. This page updates once we receive payment.</p>
+            <p class="small" id="pay-countdown" hidden></p>
             <button class="btn btn-primary btn-sm no-print" id="sim-paynow">Simulate bank confirmation (demo)</button></div>
           </div>
         </div>` : ''}
@@ -571,6 +575,32 @@
     // Paid but not yet confirmed: the order worker picks it up from the queue within seconds.
     if (o.status === 'pending_payment' && payment?.status === 'paid') {
       setTimeout(() => { if (location.hash.startsWith(`#/order/${id}`)) viewOrder(id, q); }, 2000);
+    }
+    // Awaiting PayNow: count down to the order expirer's deadline and check every few seconds whether the
+    // order was paid or cancelled, so the page updates without a refresh.
+    if (o.status === 'pending_payment' && payment?.status !== 'paid') {
+      const timeoutMin = Number(window.KK_CONFIG?.paymentTimeoutMinutes) || 0;
+      const deadline = new Date(o.createdAt).getTime() + timeoutMin * 60000;
+      const countdown = document.getElementById('pay-countdown');
+      const tickCountdown = () => {
+        const left = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+        countdown.hidden = false;
+        countdown.textContent = left ? `Pay within ${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')} or this order will be cancelled.` : 'Payment time is up. This order will be cancelled shortly.';
+        if (!left) document.getElementById('sim-paynow')?.remove();
+      };
+      if (timeoutMin) tickCountdown();
+      let ticks = 0;
+      const watch = orderWatch = setInterval(async () => {
+        if (!location.hash.startsWith(`#/order/${id}`)) { clearInterval(watch); return; }
+        if (timeoutMin) tickCountdown();
+        if (++ticks % 5) return;
+        try {
+          const now = await api('GET', `/api/payments/${encodeURIComponent(id)}/receipt`);
+          if (watch !== orderWatch || (now.order.status === o.status && now.payment?.status === payment?.status)) return;
+          if (now.order.status === 'cancelled') toast(timeoutMin && Date.now() >= deadline ? 'Payment time ran out, so this order was cancelled.' : 'This order was cancelled.', 'error');
+          viewOrder(id, q);
+        } catch { /* try again on the next check */ }
+      }, 1000);
     }
     const sim = document.getElementById('sim-paynow');
     if (sim) sim.onclick = async () => {
