@@ -144,6 +144,44 @@ resource "aws_iam_role_policy" "order_worker" {
   policy = data.aws_iam_policy_document.order_worker.json
 }
 
+resource "aws_iam_role" "order_expirer" {
+  name               = "${var.project_name}-order-expirer-role"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
+}
+
+# Logs, plus the network interfaces a VPC-attached function needs.
+resource "aws_iam_role_policy_attachment" "order_expirer_vpc" {
+  role       = aws_iam_role.order_expirer.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
+data "aws_iam_policy_document" "order_expirer" {
+  statement {
+    sid       = "SendOrderMessages"
+    actions   = ["sqs:SendMessage"]
+    resources = [aws_sqs_queue.orders.arn]
+  }
+
+  statement {
+    sid       = "ReadDbSecret"
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = [aws_db_instance.main.master_user_secret[0].secret_arn]
+  }
+
+  # The DB secret is encrypted with the project key.
+  statement {
+    sid       = "DecryptDbSecret"
+    actions   = ["kms:Decrypt"]
+    resources = [aws_kms_key.main.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "order_expirer" {
+  name   = "order-expirer-access"
+  role   = aws_iam_role.order_expirer.id
+  policy = data.aws_iam_policy_document.order_expirer.json
+}
+
 resource "aws_iam_role" "email_sender" {
   name               = "${var.project_name}-email-sender-role"
   assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
@@ -296,6 +334,25 @@ resource "aws_iam_role_policy" "archive_scheduler" {
   name   = "archive-scheduler-access"
   role   = aws_iam_role.archive_scheduler.id
   policy = data.aws_iam_policy_document.archive_scheduler.json
+}
+
+resource "aws_iam_role" "order_expiry_scheduler" {
+  name               = "${var.project_name}-order-expiry-scheduler-role"
+  assume_role_policy = data.aws_iam_policy_document.scheduler_assume.json
+}
+
+data "aws_iam_policy_document" "order_expiry_scheduler" {
+  statement {
+    sid       = "InvokeOrderExpirer"
+    actions   = ["lambda:InvokeFunction"]
+    resources = [aws_lambda_function.order_expirer.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "order_expiry_scheduler" {
+  name   = "order-expiry-scheduler-access"
+  role   = aws_iam_role.order_expiry_scheduler.id
+  policy = data.aws_iam_policy_document.order_expiry_scheduler.json
 }
 
 # QuickSight reads the feed with this role instead of its account-wide service role, which has

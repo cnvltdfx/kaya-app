@@ -81,6 +81,7 @@ The first line copies your AWS session into the shell. The credential helper nee
 
 ```sh
 (cd infra/lambdas/order-worker && npm ci --omit=dev)   # the order worker's zip bundles mysql2
+(cd infra/lambdas/order-expirer && npm ci --omit=dev)  # so does the order expirer's
 (cd infra/lambdas/data-archiver && npm ci --omit=dev)  # the archiver's zip bundles mysql2 and hyparquet-writer
 cd infra/terraform
 terraform apply
@@ -184,14 +185,15 @@ Terraform creates the QuickSight data source, dataset and daily refresh only onc
 
 ## 9. Order processing
 
-`orders.tf` creates the decoupled order pipeline as part of step 4: an SQS order queue with a dead-letter queue, an order-worker Lambda, an SNS order-events topic, an email-sender Lambda, and an optional SES sender identity.
+`orders.tf` creates the decoupled order pipeline as part of step 4: an SQS order queue with a dead-letter queue, an order-worker Lambda, an SNS order-events topic, an email-sender Lambda, an order-expirer Lambda on a schedule, and an optional SES sender identity.
 
 1. At checkout the API reserves stock and saves the order as `pending_payment`.
 2. Once payment goes through, the API sends `{"orderId":"KK100123","outcome":"paid"}` to the queue (`ORDER_QUEUE_URL`).
 3. The worker, in the private app subnet, settles the order in the database and publishes an order event to SNS. It reaches Secrets Manager and SNS through the NAT instance.
 4. The email sender, outside the VPC, emails the customer through SES. Staff subscribed to the topic get `rejected` events (money received for an already-cancelled order) to refund by hand.
+5. Every 5 minutes (`order_expiry_schedule`) the order expirer finds orders still `pending_payment` more than `order_payment_timeout_minutes` (default 30) after checkout, such as a PayNow order the customer never paid. It sends `expired` for each one, and the worker cancels the order, returns its stock and emails the customer. If the payment did arrive but the API couldn't queue it, the expirer sends `paid` instead. A failed run emails the ops alerts list.
 
-The order worker bundles `mysql2`, so run `npm ci --omit=dev` in `infra/lambdas/order-worker` before every `terraform apply` (Terraform zips the folder as it is). Without it the worker fails with `Cannot find package 'mysql2'`. Both Lambdas have tests: `npm install && npm test` in each folder; the worker's need local MySQL (`docker compose up -d` in `backend/`).
+The order worker and the order expirer bundle `mysql2`, so run `npm ci --omit=dev` in `infra/lambdas/order-worker` and `infra/lambdas/order-expirer` before every `terraform apply` (Terraform zips the folders as they are). Without it they fail with `Cannot find package 'mysql2'`. All three Lambdas have tests: `npm install && npm test` in each folder; the worker's and the expirer's need local MySQL (`docker compose up -d` in `backend/`).
 
 Optional settings in `terraform.tfvars`:
 

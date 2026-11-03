@@ -122,6 +122,33 @@ resource "aws_vpc_security_group_egress_rule" "order_worker_https" {
   cidr_ipv4         = "0.0.0.0/0"
 }
 
+resource "aws_security_group" "order_expirer" {
+  name        = "${var.project_name}-order-expirer"
+  description = "Order expirer Lambda"
+  vpc_id      = aws_vpc.main.id
+
+  tags = { Name = "${var.project_name}-order-expirer-sg" }
+}
+
+resource "aws_vpc_security_group_egress_rule" "order_expirer_to_db" {
+  security_group_id            = aws_security_group.order_expirer.id
+  description                  = "MySQL to the database"
+  ip_protocol                  = "tcp"
+  from_port                    = 3306
+  to_port                      = 3306
+  referenced_security_group_id = aws_security_group.db.id
+}
+
+# HTTPS via NAT for Secrets Manager (DB password) and SQS (order queue).
+resource "aws_vpc_security_group_egress_rule" "order_expirer_https" {
+  security_group_id = aws_security_group.order_expirer.id
+  description       = "HTTPS to AWS APIs"
+  ip_protocol       = "tcp"
+  from_port         = 443
+  to_port           = 443
+  cidr_ipv4         = "0.0.0.0/0"
+}
+
 resource "aws_security_group" "data_archiver" {
   name        = "${var.project_name}-data-archiver"
   description = "Data archiver Lambda"
@@ -195,6 +222,15 @@ resource "aws_vpc_security_group_ingress_rule" "db_from_order_worker" {
   from_port                    = 3306
   to_port                      = 3306
   referenced_security_group_id = aws_security_group.order_worker.id
+}
+
+resource "aws_vpc_security_group_ingress_rule" "db_from_order_expirer" {
+  security_group_id            = aws_security_group.db.id
+  description                  = "MySQL from the order expirer Lambda"
+  ip_protocol                  = "tcp"
+  from_port                    = 3306
+  to_port                      = 3306
+  referenced_security_group_id = aws_security_group.order_expirer.id
 }
 
 resource "aws_vpc_security_group_ingress_rule" "db_from_data_archiver" {

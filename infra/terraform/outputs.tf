@@ -57,6 +57,10 @@ output "order_worker_function" {
   value = aws_lambda_function.order_worker.function_name
 }
 
+output "order_expirer_function" {
+  value = aws_lambda_function.order_expirer.function_name
+}
+
 output "email_sender_function" {
   value = aws_lambda_function.email_sender.function_name
 }

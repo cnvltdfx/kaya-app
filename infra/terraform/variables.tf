@@ -190,6 +190,28 @@ variable "order_worker_timeout" {
   default     = 30
 }
 
+variable "order_payment_timeout_minutes" {
+  description = "Orders still awaiting payment this many minutes after checkout are cancelled and their stock released."
+  type        = number
+  default     = 30
+
+  validation {
+    condition     = var.order_payment_timeout_minutes >= 1 && floor(var.order_payment_timeout_minutes) == var.order_payment_timeout_minutes
+    error_message = "order_payment_timeout_minutes must be a whole number, 1 or more."
+  }
+}
+
+variable "order_expiry_schedule" {
+  description = "How often the order expirer looks for unpaid orders, in Asia/Singapore time: an EventBridge Scheduler rate() or cron() expression."
+  type        = string
+  default     = "rate(5 minutes)"
+
+  validation {
+    condition     = can(regex("^(cron|rate)\\(.+\\)$", var.order_expiry_schedule))
+    error_message = "order_expiry_schedule must be a cron(...) or rate(...) expression."
+  }
+}
+
 variable "ses_from_address" {
   description = "Sender address for order emails, verified as an SES identity. Null = no identity created."
   type        = string

@@ -1,13 +1,15 @@
 # Decoupled order processing (Lambda code in infra/lambdas).
 # API -> SQS order queue (+ DLQ) -> order-worker Lambda (settles the order in the DB)
 #     -> SNS order-events -> email-sender Lambda -> SES; staff get rejected orders by email.
+# EventBridge Scheduler -> order-expirer Lambda puts checkouts that never finished back on the queue.
 # The worker runs in the private app subnet to reach the DB, and goes out through the NAT
 # instance for Secrets Manager and SNS, so this file needs the main stack. The email sender
 # never touches the DB and stays outside the VPC.
 
 locals {
-  order_worker_name = "${var.project_name}-order-worker"
-  email_sender_name = "${var.project_name}-email-sender"
+  order_worker_name  = "${var.project_name}-order-worker"
+  email_sender_name  = "${var.project_name}-email-sender"
+  order_expirer_name = "${var.project_name}-order-expirer"
 }
 
 # ---- Queue
@@ -51,6 +53,13 @@ data "archive_file" "order_worker" {
   type        = "zip"
   source_dir  = "${path.module}/../lambdas/order-worker"
   output_path = "${path.module}/build/order-worker.zip"
+  excludes    = ["test"] # node_modules (mysql2) is included: run `npm ci --omit=dev` there first
+}
+
+data "archive_file" "order_expirer" {
+  type        = "zip"
+  source_dir  = "${path.module}/../lambdas/order-expirer"
+  output_path = "${path.module}/build/order-expirer.zip"
   excludes    = ["test"] # node_modules (mysql2) is included: run `npm ci --omit=dev` there first
 }
 
@@ -103,6 +112,78 @@ resource "aws_lambda_event_source_mapping" "orders" {
 
   # The worker role needs SQS receive permission before the mapping can be created.
   depends_on = [aws_iam_role_policy.order_worker]
+}
+
+# ---- Order expirer: schedule -> orders stuck in pending_payment -> order queue
+
+resource "aws_cloudwatch_log_group" "order_expirer" {
+  name              = "/aws/lambda/${local.order_expirer_name}"
+  retention_in_days = 14
+}
+
+resource "aws_lambda_function" "order_expirer" {
+  function_name    = local.order_expirer_name
+  role             = aws_iam_role.order_expirer.arn
+  runtime          = "nodejs22.x"
+  handler          = "index.handler"
+  filename         = data.archive_file.order_expirer.output_path
+  source_code_hash = data.archive_file.order_expirer.output_base64sha256
+  timeout          = 60
+  memory_size      = 128
+
+  vpc_config {
+    subnet_ids         = [aws_subnet.app.id]
+    security_group_ids = [aws_security_group.order_expirer.id]
+  }
+
+  environment {
+    variables = {
+      ORDER_QUEUE_URL               = aws_sqs_queue.orders.url
+      ORDER_PAYMENT_TIMEOUT_MINUTES = var.order_payment_timeout_minutes
+      DB_HOST                       = aws_db_instance.main.address
+      DB_NAME                       = var.db_name
+      DB_SECRET_ARN                 = aws_db_instance.main.master_user_secret[0].secret_arn
+    }
+  }
+
+  depends_on = [aws_cloudwatch_log_group.order_expirer, aws_iam_role_policy_attachment.order_expirer_vpc]
+}
+
+# No retries or DLQ: the next run picks up whatever a missed one would have.
+resource "aws_scheduler_schedule" "order_expirer" {
+  name                         = "${var.project_name}-order-expiry"
+  schedule_expression          = var.order_expiry_schedule
+  schedule_expression_timezone = "Asia/Singapore"
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  target {
+    arn      = aws_lambda_function.order_expirer.arn
+    role_arn = aws_iam_role.order_expiry_scheduler.arn
+
+    retry_policy {
+      maximum_retry_attempts = 0
+    }
+  }
+}
+
+# A run failed (DB or SQS). Unpaid orders keep their stock reserved until a run succeeds.
+resource "aws_cloudwatch_metric_alarm" "order_expirer_errors" {
+  alarm_name          = "${var.project_name}-order-expirer-errors"
+  alarm_description   = "The order expirer Lambda failed. Check its logs; unpaid orders keep their stock reserved until it runs again."
+  namespace           = "AWS/Lambda"
+  metric_name         = "Errors"
+  dimensions          = { FunctionName = aws_lambda_function.order_expirer.function_name }
+  statistic           = "Sum"
+  period              = 900
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = local.alarm_actions
+  ok_actions          = local.alarm_actions
 }
 
 # ---- Email sender: SNS order event -> SES email
