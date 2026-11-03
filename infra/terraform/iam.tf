@@ -232,6 +232,72 @@ resource "aws_iam_role_policy" "report_scheduler" {
   policy = data.aws_iam_policy_document.report_scheduler.json
 }
 
+# ---- Data archival
+
+resource "aws_iam_role" "data_archiver" {
+  name               = "${var.project_name}-data-archiver-role"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
+}
+
+# Logs, plus the network interfaces a VPC-attached function needs.
+resource "aws_iam_role_policy_attachment" "data_archiver_vpc" {
+  role       = aws_iam_role.data_archiver.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
+data "aws_iam_policy_document" "data_archiver" {
+  # Put only: the lifecycle rule, not the archiver, deletes archive files.
+  statement {
+    sid       = "WriteArchiveFiles"
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.archive.arn}/orders/*"]
+  }
+
+  statement {
+    sid       = "ReadDbSecret"
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = [aws_db_instance.main.master_user_secret[0].secret_arn]
+  }
+
+  # The DB secret and the archive bucket are encrypted with the project key.
+  statement {
+    sid       = "UseProjectKey"
+    actions   = ["kms:Decrypt", "kms:GenerateDataKey"]
+    resources = [aws_kms_key.main.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "data_archiver" {
+  name   = "data-archiver-access"
+  role   = aws_iam_role.data_archiver.id
+  policy = data.aws_iam_policy_document.data_archiver.json
+}
+
+resource "aws_iam_role" "archive_scheduler" {
+  name               = "${var.project_name}-archive-scheduler-role"
+  assume_role_policy = data.aws_iam_policy_document.scheduler_assume.json
+}
+
+data "aws_iam_policy_document" "archive_scheduler" {
+  statement {
+    sid       = "InvokeDataArchiver"
+    actions   = ["lambda:InvokeFunction"]
+    resources = [aws_lambda_function.data_archiver.arn]
+  }
+
+  statement {
+    sid       = "SendToDlq"
+    actions   = ["sqs:SendMessage"]
+    resources = [aws_sqs_queue.archive_schedule_dlq.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "archive_scheduler" {
+  name   = "archive-scheduler-access"
+  role   = aws_iam_role.archive_scheduler.id
+  policy = data.aws_iam_policy_document.archive_scheduler.json
+}
+
 # QuickSight reads the feed with this role instead of its account-wide service role, which has
 # no access to the project KMS key.
 data "aws_iam_policy_document" "quicksight_assume" {

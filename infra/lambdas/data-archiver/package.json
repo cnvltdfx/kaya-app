@@ -1,0 +1,20 @@
+{
+  "name": "kool-kaya-kitchen-data-archiver",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Monthly schedule -> closed orders from MySQL -> Parquet in the S3 archive bucket -> delete from MySQL. The AWS SDK comes with the Lambda runtime.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "hyparquet-writer": "^0.18.0",
+    "mysql2": "^3.24.6"
+  },
+  "devDependencies": {
+    "hyparquet": "^1.32.0"
+  }
+}

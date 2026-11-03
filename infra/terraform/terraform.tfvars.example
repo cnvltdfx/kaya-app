@@ -28,3 +28,10 @@ scheduled_scaling_actions = {
 
 # Reporting: set after enabling QuickSight and generating the first report (README "Reports")
 # quicksight_user_arn = "arn:aws:quicksight:ap-southeast-1:123456789012:user/default/your-name"
+
+# Data archival (archive.tf). Defaults: 03:00 SGT on the 15th; closed orders older than 2 years;
+# Glacier after 1 year; deleted after 5 years. For a quick demo, see demo.tfvars.example.
+# archive_schedule           = "cron(0 3 15 * ? *)"
+# archive_order_age_days     = 730
+# archive_glacier_after_days = 365
+# archive_expire_after_days  = 1825

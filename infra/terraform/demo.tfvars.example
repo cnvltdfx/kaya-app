@@ -1,0 +1,17 @@
+# Short data-archival timings for a demo. Copy to demo.tfvars and apply on top of terraform.tfvars:
+#   terraform apply -var-file=terraform.tfvars -var-file=demo.tfvars
+# Remove the file and apply again to go back to the production timings.
+
+# Run every 15 minutes instead of monthly (still Asia/Singapore time).
+archive_schedule = "rate(15 minutes)"
+
+# The seed data covers the last 30 days, so 7 days leaves recent orders in place.
+archive_order_age_days = 7
+
+# S3 lifecycle rules count whole days (at least 1) and run about once a day, so the
+# files reach Glacier 1–2 days after upload and are deleted 2–3 days after upload.
+archive_glacier_after_days = 1
+archive_expire_after_days  = 2
+
+# Lets terraform destroy remove the bucket with files still in it.
+archive_bucket_force_destroy = true

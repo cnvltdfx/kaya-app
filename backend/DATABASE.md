@@ -157,6 +157,7 @@ These rows are inserted only when the database is empty:
 - **Which orders count as closed:** those with `status IN ('delivered', 'cancelled')`, filtered on `created_at`. There's an index on `(status, created_at)` for this.
 - **Deleting:** deleting an order row also deletes its `order_items` and `order_status_history`. `payments` has no foreign key, so delete those rows by `order_id`.
 - **Demo data range:** the seed data only covers the last 30 days, so shorten the 2-year cutoff for the demo, for example to `INTERVAL 7 DAY`.
+- **Implemented in** `infra/lambdas/data-archiver` (monthly by default, configured in `infra/terraform/archive.tf`). It moves these orders and their rows to Parquet in the archive bucket, then deletes them here. Archived orders no longer appear in the app, reports or the dashboard.
 
 **Monitoring.**
 - The RDS instance and its identifier haven't changed, so the existing CPU and storage alarms still apply.

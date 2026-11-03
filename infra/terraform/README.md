@@ -81,6 +81,7 @@ The first line copies your AWS session into the shell. The credential helper nee
 
 ```sh
 (cd infra/lambdas/order-worker && npm ci --omit=dev)   # the order worker's zip bundles mysql2
+(cd infra/lambdas/data-archiver && npm ci --omit=dev)  # the archiver's zip bundles mysql2 and hyparquet-writer
 cd infra/terraform
 terraform apply
 ```
@@ -213,6 +214,40 @@ aws sns publish --topic-arn "$(terraform output -raw order_events_topic_arn)" \
 aws logs tail /aws/lambda/kool-kaya-kitchen-email-sender --since 5m
 ```
 
+## 10. Data archival
+
+`archive.tf` creates the archival pipeline as part of step 4: an EventBridge Scheduler schedule, a data-archiver Lambda, and a private archive bucket.
+
+1. At 03:00 SGT on the 15th of each month, the schedule invokes the archiver.
+2. The archiver, in the private app subnet, picks closed orders (`delivered` or `cancelled`) created more than `archive_order_age_days` ago, 500 at a time, oldest first.
+3. For each batch it writes four Parquet files to `orders/archived_on=<date>/batch-<first order id>/`: `orders`, `order_items`, `order_status_history` and `payments`. The files are stored in Intelligent-Tiering and encrypted with the project KMS key.
+4. Once the upload succeeds, it deletes those orders from the database in the same transaction. If anything fails, the batch rolls back and the orders wait for the next run.
+5. The bucket's lifecycle rule moves the files to Glacier Flexible Retrieval after `archive_glacier_after_days` and deletes them after `archive_expire_after_days`. Both are counted from upload.
+
+If a run fails, or the scheduler can't invoke the Lambda, an alarm emails the ops alerts list (`alert_emails`).
+
+| Variable | Default | Demo (`demo.tfvars.example`) |
+|---|---|---|
+| `archive_schedule` | `cron(0 3 15 * ? *)` (03:00 SGT on the 15th) | `rate(15 minutes)` |
+| `archive_order_age_days` | `730` (2 years) | `7` |
+| `archive_glacier_after_days` | `365` (1 year) | `1` |
+| `archive_expire_after_days` | `1825` (5 years) | `2` |
+
+For a demo, copy `demo.tfvars.example` to `demo.tfvars` and apply both files: `terraform apply -var-file=terraform.tfvars -var-file=demo.tfvars`. The archive itself can be shown within minutes. Glacier and deletion can't: S3 lifecycle rules count in whole days and run about once a day, so files reach Glacier 1–2 days after upload and are deleted a day later.
+
+Like the order worker, the archiver bundles its dependencies, so run `npm ci --omit=dev` in `infra/lambdas/data-archiver` before `terraform apply`. Its tests need local MySQL: `npm install && npm test`.
+
+Smoke test, without waiting for the schedule:
+
+```sh
+aws lambda invoke --function-name "$(terraform output -raw data_archiver_function)" /dev/stdout
+# {"orders":12,"batches":1,"complete":true,"runDate":"2026-11-15","orderAgeDays":7}
+aws s3 ls "s3://$(terraform output -raw archive_bucket)/orders/" --recursive
+aws s3api head-object --bucket "$(terraform output -raw archive_bucket)" --key <a key from above>   # StorageClass, and later the Glacier transition
+```
+
+The files can be queried in place with Athena (restore them first once they are in Glacier), or read with any Parquet tool after downloading.
+
 ## Troubleshooting
 
 | Symptom | Likely cause |
@@ -234,6 +269,7 @@ These run 24/7: the **ALB**, the **RDS instance**, the **NAT instance**, the API
 # 1. In terraform.tfvars, allow deleting the database and the non-empty bucket:
 #      db_deletion_protection       = false
 #      reports_bucket_force_destroy = true
+#      archive_bucket_force_destroy = true
 terraform apply
 
 # 2. Delete all images in ECR (destroy fails while the repository has any, including untagged ones):

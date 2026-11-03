@@ -64,3 +64,11 @@ output "email_sender_function" {
 output "report_generator_function" {
   value = aws_lambda_function.report_generator.function_name
 }
+
+output "archive_bucket" {
+  value = aws_s3_bucket.archive.bucket
+}
+
+output "data_archiver_function" {
+  value = aws_lambda_function.data_archiver.function_name
+}
