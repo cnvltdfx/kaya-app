@@ -235,3 +235,255 @@ output "ops_alerts_topic_arn" {
   description = "SNS topic that receives all ops alarms."
   value       = aws_sns_topic.ops_alerts.arn
 }
+
+# ---- Dashboard
+#
+# One CloudWatch dashboard for the whole system, laid out like the architecture diagram:
+# website (load balancer) -> API servers and database -> order processing -> reporting
+# and archival -> status of every alarm that sends to the ops alerts topic.
+# Free tier: 3 dashboards with up to 50 metrics each; this one uses about 26.
+
+locals {
+  dash_region = var.aws_region
+  alb_dim     = ["LoadBalancer", aws_lb.app.arn_suffix]
+  tg_dims     = ["TargetGroup", aws_lb_target_group.app.arn_suffix, "LoadBalancer", aws_lb.app.arn_suffix]
+  db_dim      = ["DBInstanceIdentifier", aws_db_instance.main.identifier]
+
+  dashboard_alarms = [
+    aws_cloudwatch_metric_alarm.alb_no_healthy_hosts.arn,
+    aws_cloudwatch_metric_alarm.alb_target_5xx.arn,
+    aws_cloudwatch_metric_alarm.alb_elb_5xx.arn,
+    aws_cloudwatch_metric_alarm.alb_latency_p95.arn,
+    aws_cloudwatch_metric_alarm.api_cpu_high.arn,
+    aws_cloudwatch_metric_alarm.db_cpu_high.arn,
+    aws_cloudwatch_metric_alarm.db_storage_low.arn,
+    aws_cloudwatch_metric_alarm.nat_status_check.arn,
+    aws_cloudwatch_metric_alarm.order_expirer_errors.arn,
+    aws_cloudwatch_metric_alarm.data_archiver_errors.arn,
+    aws_cloudwatch_metric_alarm.archive_schedule_dlq.arn,
+  ]
+}
+
+resource "aws_cloudwatch_dashboard" "ops" {
+  dashboard_name = "${var.project_name}-ops"
+
+  dashboard_body = jsonencode({
+    widgets = [
+      # ---- Header
+      {
+        type = "text", x = 0, y = 0, width = 24, height = 2
+        properties = {
+          markdown = "# Kool Kaya Kitchen: operations\nWebsite traffic and errors, server and database health, order processing, reporting and archival. Alarms email the ops alerts list (`alert_emails`)."
+        }
+      },
+
+      # ---- Alarm status (top, so problems are seen first)
+      {
+        type = "alarm", x = 0, y = 2, width = 24, height = 3
+        properties = {
+          title  = "Alarm status"
+          alarms = local.dashboard_alarms
+        }
+      },
+
+      # ---- Website (load balancer)
+      {
+        type       = "text", x = 0, y = 5, width = 24, height = 1
+        properties = { markdown = "## Website (load balancer)" }
+      },
+      {
+        type = "metric", x = 0, y = 6, width = 6, height = 6
+        properties = {
+          title   = "Requests (per minute)"
+          region  = local.dash_region
+          view    = "timeSeries"
+          stat    = "Sum"
+          period  = 60
+          metrics = [concat(["AWS/ApplicationELB", "RequestCount"], local.alb_dim, [{ label = "Requests" }])]
+        }
+      },
+      {
+        type = "metric", x = 6, y = 6, width = 6, height = 6
+        properties = {
+          title  = "Errors (5xx per 5 min)"
+          region = local.dash_region
+          view   = "timeSeries"
+          stat   = "Sum"
+          period = 300
+          metrics = [
+            concat(["AWS/ApplicationELB", "HTTPCode_Target_5XX_Count"], local.alb_dim, [{ label = "From API servers" }]),
+            concat(["AWS/ApplicationELB", "HTTPCode_ELB_5XX_Count"], local.alb_dim, [{ label = "From load balancer" }]),
+          ]
+          annotations = { horizontal = [{ label = "Alarm", value = var.alarm_5xx_count }] }
+        }
+      },
+      {
+        type = "metric", x = 12, y = 6, width = 6, height = 6
+        properties = {
+          title  = "Response time (seconds)"
+          region = local.dash_region
+          view   = "timeSeries"
+          period = 300
+          metrics = [
+            concat(["AWS/ApplicationELB", "TargetResponseTime"], local.alb_dim, [{ stat = "p50", label = "p50 (typical)" }]),
+            concat(["AWS/ApplicationELB", "TargetResponseTime"], local.alb_dim, [{ stat = "p95", label = "p95 (slowest 5%)" }]),
+          ]
+          annotations = { horizontal = [{ label = "Alarm", value = var.alarm_p95_latency_seconds }] }
+        }
+      },
+      {
+        type = "metric", x = 18, y = 6, width = 6, height = 6
+        properties = {
+          title  = "API servers behind the load balancer"
+          region = local.dash_region
+          view   = "timeSeries"
+          stat   = "Minimum"
+          period = 60
+          metrics = [
+            concat(["AWS/ApplicationELB", "HealthyHostCount"], local.tg_dims, [{ label = "Healthy" }]),
+            concat(["AWS/ApplicationELB", "UnHealthyHostCount"], local.tg_dims, [{ label = "Unhealthy" }]),
+          ]
+        }
+      },
+
+      # ---- Servers and database
+      {
+        type       = "text", x = 0, y = 12, width = 24, height = 1
+        properties = { markdown = "## Servers and database" }
+      },
+      {
+        type = "metric", x = 0, y = 13, width = 8, height = 6
+        properties = {
+          title  = "CPU (%)"
+          region = local.dash_region
+          view   = "timeSeries"
+          stat   = "Average"
+          period = 300
+          metrics = [
+            ["AWS/EC2", "CPUUtilization", "AutoScalingGroupName", local.asg_name, { label = "API servers" }],
+            concat(["AWS/RDS", "CPUUtilization"], local.db_dim, [{ label = "Database" }]),
+            ["AWS/EC2", "CPUUtilization", "InstanceId", aws_instance.nat.id, { label = "NAT" }],
+          ]
+          annotations = { horizontal = [{ label = "Alarm", value = var.alarm_cpu_percent }] }
+          yAxis       = { left = { min = 0, max = 100 } }
+        }
+      },
+      {
+        type = "metric", x = 8, y = 13, width = 8, height = 6
+        properties = {
+          title   = "Database connections"
+          region  = local.dash_region
+          view    = "timeSeries"
+          stat    = "Maximum"
+          period  = 300
+          metrics = [concat(["AWS/RDS", "DatabaseConnections"], local.db_dim, [{ label = "Connections" }])]
+        }
+      },
+      {
+        type = "metric", x = 16, y = 13, width = 8, height = 6
+        properties = {
+          title  = "Database free storage (GB)"
+          region = local.dash_region
+          view   = "timeSeries"
+          period = 300
+          metrics = [
+            [{ expression = "bytes / 1073741824", label = "Free storage (GB)", id = "gb" }],
+            concat(["AWS/RDS", "FreeStorageSpace"], local.db_dim, [{ stat = "Minimum", id = "bytes", visible = false }]),
+          ]
+          annotations = { horizontal = [{ label = "Alarm", value = var.alarm_db_free_storage_gb }] }
+        }
+      },
+
+      # ---- Order processing
+      {
+        type       = "text", x = 0, y = 19, width = 24, height = 1
+        properties = { markdown = "## Order processing (SQS order queue, order worker, order expirer, email sender)" }
+      },
+      {
+        type = "metric", x = 0, y = 20, width = 8, height = 6
+        properties = {
+          title  = "Order queue"
+          region = local.dash_region
+          view   = "timeSeries"
+          stat   = "Maximum"
+          period = 300
+          metrics = [
+            ["AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", aws_sqs_queue.orders.name, { label = "Orders waiting" }],
+            ["AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", aws_sqs_queue.orders_dlq.name, { label = "Failed orders (DLQ)" }],
+          ]
+        }
+      },
+      {
+        type = "metric", x = 8, y = 20, width = 8, height = 6
+        properties = {
+          title  = "Oldest order waiting (seconds)"
+          region = local.dash_region
+          view   = "timeSeries"
+          stat   = "Maximum"
+          period = 300
+          metrics = [
+            ["AWS/SQS", "ApproximateAgeOfOldestMessage", "QueueName", aws_sqs_queue.orders.name, { label = "Oldest order" }],
+          ]
+        }
+      },
+      {
+        type = "metric", x = 16, y = 20, width = 8, height = 6
+        properties = {
+          title  = "Order Lambdas: runs and errors (per 5 min)"
+          region = local.dash_region
+          view   = "timeSeries"
+          stat   = "Sum"
+          period = 300
+          metrics = [
+            ["AWS/Lambda", "Invocations", "FunctionName", aws_lambda_function.order_worker.function_name, { label = "Order worker runs" }],
+            ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.order_worker.function_name, { label = "Order worker errors" }],
+            ["AWS/Lambda", "Invocations", "FunctionName", aws_lambda_function.email_sender.function_name, { label = "Email sender runs" }],
+            ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.email_sender.function_name, { label = "Email sender errors" }],
+            ["AWS/Lambda", "Invocations", "FunctionName", aws_lambda_function.order_expirer.function_name, { label = "Order expirer runs" }],
+            ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.order_expirer.function_name, { label = "Order expirer errors" }],
+          ]
+        }
+      },
+
+      # ---- Reporting and archival
+      {
+        type       = "text", x = 0, y = 26, width = 24, height = 1
+        properties = { markdown = "## Reporting and data archival" }
+      },
+      {
+        type = "metric", x = 0, y = 27, width = 12, height = 6
+        properties = {
+          title  = "Report generator: runs and errors (per day)"
+          region = local.dash_region
+          view   = "timeSeries"
+          stat   = "Sum"
+          period = 86400
+          metrics = [
+            ["AWS/Lambda", "Invocations", "FunctionName", aws_lambda_function.report_generator.function_name, { label = "Runs" }],
+            ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.report_generator.function_name, { label = "Errors" }],
+          ]
+        }
+      },
+      {
+        type = "metric", x = 12, y = 27, width = 12, height = 6
+        properties = {
+          title  = "Data archiver: runs and errors (per day)"
+          region = local.dash_region
+          view   = "timeSeries"
+          stat   = "Sum"
+          period = 86400
+          metrics = [
+            ["AWS/Lambda", "Invocations", "FunctionName", aws_lambda_function.data_archiver.function_name, { label = "Runs" }],
+            ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.data_archiver.function_name, { label = "Errors" }],
+            ["AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", aws_sqs_queue.archive_schedule_dlq.name, { stat = "Maximum", label = "Missed schedules (DLQ)" }],
+          ]
+        }
+      },
+    ]
+  })
+}
+
+output "ops_dashboard_url" {
+  description = "CloudWatch dashboard for the team."
+  value       = "https://${var.aws_region}.console.aws.amazon.com/cloudwatch/home?region=${var.aws_region}#dashboards/dashboard/${aws_cloudwatch_dashboard.ops.dashboard_name}"
+}
