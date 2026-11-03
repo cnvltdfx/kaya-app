@@ -54,6 +54,8 @@ resource "aws_launch_template" "app" {
     order_queue_url = aws_sqs_queue.orders.url
     asg_name        = local.asg_name
     hook_name       = local.launch_hook_name
+    # CloudFront -> ALB -> app adds a hop; only trust it when the ALB accepts CloudFront alone.
+    trust_proxy_hops = var.restrict_alb_to_cloudfront ? 2 : 1
   }))
 
   tag_specifications {

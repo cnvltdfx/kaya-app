@@ -45,7 +45,7 @@ variable "acm_certificate_arn" {
 }
 
 variable "restrict_alb_to_cloudfront" {
-  description = "Only accept ALB traffic from CloudFront's origin-facing IP ranges. Enable once CloudFront fronts /api/*."
+  description = "Only accept ALB traffic from CloudFront: its origin-facing IP ranges, carrying the X-Origin-Verify header (cdn.tf). Also makes the API trust one more proxy hop for client IPs. Enable once the site works through CloudFront."
   type        = bool
   default     = false
 }

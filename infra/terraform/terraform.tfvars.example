@@ -16,7 +16,13 @@ scheduled_scaling_actions = {
 }
 
 # acm_certificate_arn        = "arn:aws:acm:ap-southeast-1:123456789012:certificate/..."
-# restrict_alb_to_cloudfront = true
+# alb_origin_domain          = "origin.example.com"   # required with acm_certificate_arn (cdn.tf)
+# restrict_alb_to_cloudfront = true                   # after the site works through CloudFront
+
+# CloudFront WAF (waf.tf). Switch to block after reviewing a few days of counted matches.
+# waf_mode            = "block"
+# waf_rate_limit      = 2000
+# waf_auth_rate_limit = 100
 
 # Order processing
 # ses_from_address  = "orders@example.com"

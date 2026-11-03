@@ -16,7 +16,9 @@ const PORT = Number(process.env.PORT || 3000);
 // dev the API also serves it when that directory is present; set FRONTEND_DIR='' to disable.
 const FRONTEND_DIR = process.env.FRONTEND_DIR ?? path.join(__dirname, '..', 'frontend');
 const app = express();
-app.set('trust proxy', 1);
+// Proxy hops in front of the app whose X-Forwarded-For entries are trusted for req.ip (rate limits):
+// 1 = ALB only (local dev, or the ALB open to the internet), 2 = CloudFront -> ALB.
+app.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS || 1));
 app.disable('x-powered-by');
 
 app.use(sec.securityHeaders);

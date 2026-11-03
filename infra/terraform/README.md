@@ -92,11 +92,13 @@ This takes about 10–15 minutes; the database is the slowest part.
 ## 5. Open the app
 
 ```sh
-terraform output -raw alb_dns_name
+terraform output -raw site_url       # the storefront, through CloudFront and the WAF
+terraform output -raw alb_dns_name   # the API directly, until step 11 locks the ALB down
 ```
 
+- Storefront: `https://<site_url>`. The apply uploads `frontend/` to S3; CloudFront serves it and sends `/api/*` to the ALB. A new distribution takes a few minutes to deploy before the URL answers.
 - Health check: `http://<alb_dns_name>/health` should return `{"status":"ok"}`.
-- API: `http://<alb_dns_name>/api/...`. The ALB serves only the API, so the root URL returns `{"error":"Not found."}`. That's expected: the storefront (`frontend/`) isn't hosted in AWS until CloudFront and S3 are set up. To click through it meanwhile, run the local helper `backend/scripts/ui-proxy.js` (on the `fix/deploy-followups` branch until it's merged), which serves `frontend/` and forwards `/api` to the ALB.
+- API: `http://<alb_dns_name>/api/...`. The ALB serves only the API, so its root URL returns `{"error":"Not found."}`.
 
 The first instance takes a few minutes to become healthy after the apply finishes.
 
@@ -250,6 +252,33 @@ aws s3api head-object --bucket "$(terraform output -raw archive_bucket)" --key <
 
 The files can be queried in place with Athena (restore them first once they are in Glacier), or read with any Parquet tool after downloading.
 
+## 11. CloudFront, WAF and locking down the ALB
+
+`cdn.tf` hosts `frontend/` in a private S3 bucket behind CloudFront (origin access control) and routes `/api/*` to the ALB. `waf.tf` attaches a WAF web ACL in us-east-1 (CloudFront's WAF must live there) with five rules: the AWS IP reputation list, a rate limit on `/api/auth/` (100 requests per IP per 5 minutes), a site-wide rate limit (2,000), the core rule set and the SQL injection rule set. Shield Standard protects CloudFront against network-layer DDoS automatically; Shield Advanced isn't available on the Free plan.
+
+CloudFront's flat-rate plans (which bundle the WAF) can't be used on a Free plan account, so the WAF is billed pay-as-you-go from your credits.
+
+Roll it out in this order so nobody gets locked out:
+
+1. **Apply with the defaults** (`waf_mode = "count"`, ALB still open). Open `site_url` and click through the shop, log in, check out and use the back office.
+2. **Lock the ALB to CloudFront.** In `terraform.tfvars` set `restrict_alb_to_cloudfront = true`, apply, then start an instance refresh (step 7) so the API trusts the extra proxy hop for client IPs (`TRUST_PROXY_HOPS=2`). Now the ALB accepts only CloudFront's IP ranges carrying the secret `X-Origin-Verify` header, and `http://<alb_dns_name>/api/...` returns 403. The `/health` check from the ALB itself is unaffected.
+3. **Review the WAF for a few days.** WAF console (region: Global / us-east-1) → `kool-kaya-kitchen-cdn` → Traffic overview, or CloudWatch Logs in us-east-1, log group `aws-waf-logs-kool-kaya-kitchen`. Look for counted matches on legitimate traffic.
+4. **Switch to blocking:** set `waf_mode = "block"` and apply.
+
+### Deploy a frontend change
+
+```sh
+cd infra/terraform
+terraform apply                                   # uploads changed files from frontend/
+eval "$(terraform output -raw frontend_invalidate_command)"   # optional: drop edge copies now
+```
+
+`index.html` and `config.js` revalidate on every request; other JS and CSS are cached for 5 minutes, images for a day. Without the invalidation, changes appear on their own within that time. (In PowerShell, copy the command from `terraform output frontend_invalidate_command` instead of using `eval`.)
+
+### Custom domain (later)
+
+With Route 53 and a domain: request an ACM certificate in **us-east-1** for CloudFront (add it as an alias on the distribution), and one in ap-southeast-1 for the ALB. Set `acm_certificate_arn` and `alb_origin_domain` (a name on the ALB certificate, e.g. `origin.example.com`, pointing at the ALB) so CloudFront reaches the ALB over HTTPS. Until then, the CloudFront → ALB leg is plain HTTP.
+
 ## Troubleshooting
 
 | Symptom | Likely cause |
@@ -261,11 +290,15 @@ The files can be queried in place with Athena (restore them first once they are 
 | `FreeTierRestrictionError` | A setting exceeds Free plan limits. Paste the error and adjust that variable; for example, `db_backup_retention_days` must stay low. |
 | Report Lambda fails with `No healthy in-service instance` | The API instance isn't healthy yet. Check the ASG and the ALB target health. |
 | Report Lambda fails with `fetch failed` / `ECONNREFUSED` | The instance runs an image without the report port. Push the new image and start an instance refresh (step 7). |
+| `site_url` returns 403 for a page | The file isn't in `frontend/` (CloudFront can't list the bucket, so missing files return 403), or the distribution is still deploying. |
+| `/api/...` returns 403 `{"error":"Forbidden."}` through CloudFront | The request reached the ALB without the right `X-Origin-Verify` header. Run `terraform apply` so the distribution and the ALB rule hold the same value. |
+| Legitimate requests blocked with a WAF 403 | Find the rule in the WAF logs (us-east-1), then raise the rate limit or set `waf_mode = "count"` while you adjust it. |
+| Logins all share one rate limit after step 11.2 | The instances still run with `TRUST_PROXY_HOPS=1`. Start an instance refresh (step 7). |
 | QuickSight data source fails to create | `reports/quicksight/sales.csv` doesn't exist yet (generate the first reports), or the new IAM role hadn't propagated. Run `terraform apply` again. |
 
 ## Cost and teardown
 
-These run 24/7: the **ALB**, the **RDS instance**, the **NAT instance**, the API instance(s), and public IPv4 addresses. Most fall under the Free plan's allowances or credits, but the free EC2 hours (750/month) cover only one instance running all month. The NAT instance plus one API instance already use about 1,500 hours, so the extra comes out of your credits. The KMS key (about US$1/month) and Secrets Manager secret (about US$0.40/month) are small extras. QuickSight bills per user from the day it's enabled; cancel the subscription in the QuickSight console when you're done, because `terraform destroy` only removes the dataset and data source. Destroy everything when you're not using it.
+These run 24/7: the **ALB**, the **RDS instance**, the **NAT instance**, the API instance(s), and public IPv4 addresses. Most fall under the Free plan's allowances or credits, but the free EC2 hours (750/month) cover only one instance running all month. The NAT instance plus one API instance already use about 1,500 hours, so the extra comes out of your credits. The KMS key (about US$1/month) and Secrets Manager secret (about US$0.40/month) are small extras. The WAF costs about US$10/month (US$5 for the web ACL, US$1 per rule) plus US$0.60 per million requests; CloudFront traffic at this size fits in its always-free allowance (1 TB and 10 million requests a month). QuickSight bills per user from the day it's enabled; cancel the subscription in the QuickSight console when you're done, because `terraform destroy` only removes the dataset and data source. Destroy everything when you're not using it.
 
 ```sh
 # 1. In terraform.tfvars, allow deleting the database and the non-empty bucket:

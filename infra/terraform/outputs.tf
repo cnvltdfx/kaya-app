@@ -1,6 +1,25 @@
 output "alb_dns_name" {
-  description = "Point CloudFront's /api/* origin here (or browse it directly for testing)."
+  description = "CloudFront's /api/* origin. Browsable directly until restrict_alb_to_cloudfront is enabled."
   value       = aws_lb.app.dns_name
+}
+
+output "site_url" {
+  description = "The storefront and API through CloudFront and the WAF."
+  value       = "https://${aws_cloudfront_distribution.main.domain_name}"
+}
+
+output "frontend_bucket" {
+  value = aws_s3_bucket.frontend.bucket
+}
+
+output "frontend_invalidate_command" {
+  description = "Run after an apply that changed frontend/ to drop cached copies at the edge right away (otherwise they expire within 5 minutes, or a day for images)."
+  value       = "aws cloudfront create-invalidation --distribution-id ${aws_cloudfront_distribution.main.id} --paths \"/*\""
+}
+
+output "waf_web_acl" {
+  description = "WAF web ACL (us-east-1). Logs: the CloudWatch log group named aws-waf-logs-<project_name> in us-east-1."
+  value       = aws_wafv2_web_acl.cdn.name
 }
 
 output "ecr_repository_url" {

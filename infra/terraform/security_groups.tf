@@ -14,7 +14,9 @@ resource "aws_security_group" "alb" {
 }
 
 resource "aws_vpc_security_group_ingress_rule" "alb" {
-  for_each = toset(local.https_enabled ? ["80", "443"] : ["80"])
+  # From CloudFront only the serving port is opened: the prefix list counts as ~55 rules
+  # against the security group's quota of 60, so it can be referenced once.
+  for_each = toset(var.restrict_alb_to_cloudfront ? [local.https_enabled ? "443" : "80"] : (local.https_enabled ? ["80", "443"] : ["80"]))
 
   security_group_id = aws_security_group.alb.id
   description       = var.restrict_alb_to_cloudfront ? "HTTP(S) from CloudFront" : "HTTP(S) from internet"
