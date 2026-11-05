@@ -32,6 +32,13 @@ scheduled_scaling_actions = {
 # Each address gets an "AWS Notification - Subscription Confirmation" email: click Confirm.
 # alert_emails = ["staff1@example.com", "staff2@example.com"]
 
+# Dashboard graph granularity in seconds (60 = one point per minute, 300 = per 5 minutes).
+# dashboard_period_seconds = 60
+
+# Alarm evaluation period in seconds (multiples of 60). Critical = site-down alarms (no healthy servers, NAT).
+# alarm_period_seconds          = 300
+# alarm_critical_period_seconds = 60
+
 # Reporting: set after enabling QuickSight and generating the first report (README "Reports")
 # quicksight_user_arn = "arn:aws:quicksight:ap-southeast-1:123456789012:user/default/your-name"
 

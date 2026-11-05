@@ -27,7 +27,7 @@ variable "alarm_p95_latency_seconds" {
 }
 
 variable "alarm_5xx_count" {
-  description = "Number of 5xx responses in 5 minutes that triggers the error alarms."
+  description = "Number of 5xx responses per alarm period that triggers the error alarms."
   type        = number
   default     = 5
 }
@@ -38,8 +38,28 @@ variable "alarm_db_free_storage_gb" {
   default     = 2
 }
 
+variable "dashboard_period_seconds" {
+  description = "Granularity (seconds) of every CloudWatch dashboard graph. CloudWatch accepts 1, 5, 10, 30, or a multiple of 60."
+  type        = number
+  default     = 60
+}
+
+variable "alarm_period_seconds" {
+  description = "Length (seconds) of each evaluation period for the error, latency, CPU and storage alarms. Must be a multiple of 60."
+  type        = number
+  default     = 300
+}
+
+variable "alarm_critical_period_seconds" {
+  description = "Length (seconds) of each evaluation period for the site-down alarms (no healthy servers, NAT status). Must be a multiple of 60."
+  type        = number
+  default     = 60
+}
+
 locals {
   alarm_actions = [aws_sns_topic.ops_alerts.arn]
+  alarm_minutes = var.alarm_period_seconds / 60
+  dash_period   = var.dashboard_period_seconds
 }
 
 # ---- SNS ops alerts
@@ -64,7 +84,7 @@ resource "aws_cloudwatch_metric_alarm" "alb_no_healthy_hosts" {
   namespace           = "AWS/ApplicationELB"
   metric_name         = "HealthyHostCount"
   statistic           = "Minimum"
-  period              = 60
+  period              = var.alarm_critical_period_seconds
   evaluation_periods  = 3
   comparison_operator = "LessThanThreshold"
   threshold           = 1
@@ -82,11 +102,11 @@ resource "aws_cloudwatch_metric_alarm" "alb_no_healthy_hosts" {
 # Server errors returned by the API servers.
 resource "aws_cloudwatch_metric_alarm" "alb_target_5xx" {
   alarm_name          = "${var.project_name}-api-5xx"
-  alarm_description   = "API servers returned ${var.alarm_5xx_count}+ server errors (5xx) in 5 minutes."
+  alarm_description   = "API servers returned ${var.alarm_5xx_count}+ server errors (5xx) in ${local.alarm_minutes} min."
   namespace           = "AWS/ApplicationELB"
   metric_name         = "HTTPCode_Target_5XX_Count"
   statistic           = "Sum"
-  period              = 300
+  period              = var.alarm_period_seconds
   evaluation_periods  = 1
   comparison_operator = "GreaterThanOrEqualToThreshold"
   threshold           = var.alarm_5xx_count
@@ -103,11 +123,11 @@ resource "aws_cloudwatch_metric_alarm" "alb_target_5xx" {
 # Errors returned by the load balancer itself (502/503/504), usually because no server could answer.
 resource "aws_cloudwatch_metric_alarm" "alb_elb_5xx" {
   alarm_name          = "${var.project_name}-alb-5xx"
-  alarm_description   = "The load balancer returned ${var.alarm_5xx_count}+ errors (502/503/504) in 5 minutes."
+  alarm_description   = "The load balancer returned ${var.alarm_5xx_count}+ errors (502/503/504) in ${local.alarm_minutes} min."
   namespace           = "AWS/ApplicationELB"
   metric_name         = "HTTPCode_ELB_5XX_Count"
   statistic           = "Sum"
-  period              = 300
+  period              = var.alarm_period_seconds
   evaluation_periods  = 1
   comparison_operator = "GreaterThanOrEqualToThreshold"
   threshold           = var.alarm_5xx_count
@@ -124,11 +144,11 @@ resource "aws_cloudwatch_metric_alarm" "alb_elb_5xx" {
 # Slow responses.
 resource "aws_cloudwatch_metric_alarm" "alb_latency_p95" {
   alarm_name          = "${var.project_name}-api-latency-p95"
-  alarm_description   = "p95 response time above ${var.alarm_p95_latency_seconds}s for 10 minutes."
+  alarm_description   = "p95 response time above ${var.alarm_p95_latency_seconds}s for ${local.alarm_minutes * 2} min."
   namespace           = "AWS/ApplicationELB"
   metric_name         = "TargetResponseTime"
   extended_statistic  = "p95"
-  period              = 300
+  period              = var.alarm_period_seconds
   evaluation_periods  = 2
   comparison_operator = "GreaterThanThreshold"
   threshold           = var.alarm_p95_latency_seconds
@@ -146,11 +166,11 @@ resource "aws_cloudwatch_metric_alarm" "alb_latency_p95" {
 
 resource "aws_cloudwatch_metric_alarm" "api_cpu_high" {
   alarm_name          = "${var.project_name}-api-cpu-high"
-  alarm_description   = "API servers averaged above ${var.alarm_cpu_percent}% CPU for 15 minutes, even with auto scaling."
+  alarm_description   = "API servers averaged above ${var.alarm_cpu_percent}% CPU for ${local.alarm_minutes * 3} min, even with auto scaling."
   namespace           = "AWS/EC2"
   metric_name         = "CPUUtilization"
   statistic           = "Average"
-  period              = 300
+  period              = var.alarm_period_seconds
   evaluation_periods  = 3
   comparison_operator = "GreaterThanThreshold"
   threshold           = var.alarm_cpu_percent
@@ -168,11 +188,11 @@ resource "aws_cloudwatch_metric_alarm" "api_cpu_high" {
 
 resource "aws_cloudwatch_metric_alarm" "db_cpu_high" {
   alarm_name          = "${var.project_name}-db-cpu-high"
-  alarm_description   = "Database above ${var.alarm_cpu_percent}% CPU for 15 minutes."
+  alarm_description   = "Database above ${var.alarm_cpu_percent}% CPU for ${local.alarm_minutes * 3} min."
   namespace           = "AWS/RDS"
   metric_name         = "CPUUtilization"
   statistic           = "Average"
-  period              = 300
+  period              = var.alarm_period_seconds
   evaluation_periods  = 3
   comparison_operator = "GreaterThanThreshold"
   threshold           = var.alarm_cpu_percent
@@ -192,7 +212,7 @@ resource "aws_cloudwatch_metric_alarm" "db_storage_low" {
   namespace           = "AWS/RDS"
   metric_name         = "FreeStorageSpace"
   statistic           = "Minimum"
-  period              = 300
+  period              = var.alarm_period_seconds
   evaluation_periods  = 1
   comparison_operator = "LessThanThreshold"
   threshold           = var.alarm_db_free_storage_gb * 1024 * 1024 * 1024
@@ -215,7 +235,7 @@ resource "aws_cloudwatch_metric_alarm" "nat_status_check" {
   namespace           = "AWS/EC2"
   metric_name         = "StatusCheckFailed"
   statistic           = "Maximum"
-  period              = 60
+  period              = var.alarm_critical_period_seconds
   evaluation_periods  = 2
   comparison_operator = "GreaterThanOrEqualToThreshold"
   threshold           = 1
@@ -294,22 +314,22 @@ resource "aws_cloudwatch_dashboard" "ops" {
       {
         type = "metric", x = 0, y = 6, width = 6, height = 6
         properties = {
-          title   = "Requests (per minute)"
+          title   = "Requests"
           region  = local.dash_region
           view    = "timeSeries"
           stat    = "Sum"
-          period  = 60
+          period  = local.dash_period
           metrics = [concat(["AWS/ApplicationELB", "RequestCount"], local.alb_dim, [{ label = "Requests" }])]
         }
       },
       {
         type = "metric", x = 6, y = 6, width = 6, height = 6
         properties = {
-          title  = "Errors (5xx per 5 min)"
+          title  = "Errors (5xx)"
           region = local.dash_region
           view   = "timeSeries"
           stat   = "Sum"
-          period = 300
+          period = local.dash_period
           metrics = [
             concat(["AWS/ApplicationELB", "HTTPCode_Target_5XX_Count"], local.alb_dim, [{ label = "From API servers" }]),
             concat(["AWS/ApplicationELB", "HTTPCode_ELB_5XX_Count"], local.alb_dim, [{ label = "From load balancer" }]),
@@ -323,7 +343,7 @@ resource "aws_cloudwatch_dashboard" "ops" {
           title  = "Response time (seconds)"
           region = local.dash_region
           view   = "timeSeries"
-          period = 300
+          period = local.dash_period
           metrics = [
             concat(["AWS/ApplicationELB", "TargetResponseTime"], local.alb_dim, [{ stat = "p50", label = "p50 (typical)" }]),
             concat(["AWS/ApplicationELB", "TargetResponseTime"], local.alb_dim, [{ stat = "p95", label = "p95 (slowest 5%)" }]),
@@ -338,7 +358,7 @@ resource "aws_cloudwatch_dashboard" "ops" {
           region = local.dash_region
           view   = "timeSeries"
           stat   = "Minimum"
-          period = 60
+          period = local.dash_period
           metrics = [
             concat(["AWS/ApplicationELB", "HealthyHostCount"], local.tg_dims, [{ label = "Healthy" }]),
             concat(["AWS/ApplicationELB", "UnHealthyHostCount"], local.tg_dims, [{ label = "Unhealthy" }]),
@@ -358,7 +378,7 @@ resource "aws_cloudwatch_dashboard" "ops" {
           region = local.dash_region
           view   = "timeSeries"
           stat   = "Average"
-          period = 300
+          period = local.dash_period
           metrics = [
             ["AWS/EC2", "CPUUtilization", "AutoScalingGroupName", local.asg_name, { label = "API servers" }],
             concat(["AWS/RDS", "CPUUtilization"], local.db_dim, [{ label = "Database" }]),
@@ -375,7 +395,7 @@ resource "aws_cloudwatch_dashboard" "ops" {
           region  = local.dash_region
           view    = "timeSeries"
           stat    = "Maximum"
-          period  = 300
+          period  = local.dash_period
           metrics = [concat(["AWS/RDS", "DatabaseConnections"], local.db_dim, [{ label = "Connections" }])]
         }
       },
@@ -385,7 +405,7 @@ resource "aws_cloudwatch_dashboard" "ops" {
           title  = "Database free storage (GB)"
           region = local.dash_region
           view   = "timeSeries"
-          period = 300
+          period = local.dash_period
           metrics = [
             [{ expression = "bytes / 1073741824", label = "Free storage (GB)", id = "gb" }],
             concat(["AWS/RDS", "FreeStorageSpace"], local.db_dim, [{ stat = "Minimum", id = "bytes", visible = false }]),
@@ -406,7 +426,7 @@ resource "aws_cloudwatch_dashboard" "ops" {
           region = local.dash_region
           view   = "timeSeries"
           stat   = "Maximum"
-          period = 60
+          period = local.dash_period
           metrics = [
             ["AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", aws_sqs_queue.orders.name, { label = "Orders waiting" }],
             ["AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", aws_sqs_queue.orders_dlq.name, { label = "Failed orders (DLQ)" }],
@@ -420,7 +440,7 @@ resource "aws_cloudwatch_dashboard" "ops" {
           region = local.dash_region
           view   = "timeSeries"
           stat   = "Maximum"
-          period = 60
+          period = local.dash_period
           metrics = [
             ["AWS/SQS", "ApproximateAgeOfOldestMessage", "QueueName", aws_sqs_queue.orders.name, { label = "Oldest order" }],
           ]
@@ -429,11 +449,11 @@ resource "aws_cloudwatch_dashboard" "ops" {
       {
         type = "metric", x = 16, y = 20, width = 8, height = 6
         properties = {
-          title  = "Order Lambdas: runs and errors (per minute)"
+          title  = "Order Lambdas: runs and errors"
           region = local.dash_region
           view   = "timeSeries"
           stat   = "Sum"
-          period = 60
+          period = local.dash_period
           metrics = [
             ["AWS/Lambda", "Invocations", "FunctionName", aws_lambda_function.order_worker.function_name, { label = "Order worker runs" }],
             ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.order_worker.function_name, { label = "Order worker errors" }],
@@ -453,11 +473,11 @@ resource "aws_cloudwatch_dashboard" "ops" {
       {
         type = "metric", x = 0, y = 27, width = 12, height = 6
         properties = {
-          title  = "Report generator: runs and errors (per minute)"
+          title  = "Report generator: runs and errors"
           region = local.dash_region
           view   = "timeSeries"
           stat   = "Sum"
-          period = 60
+          period = local.dash_period
           metrics = [
             ["AWS/Lambda", "Invocations", "FunctionName", aws_lambda_function.report_generator.function_name, { label = "Runs" }],
             ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.report_generator.function_name, { label = "Errors" }],
@@ -467,11 +487,11 @@ resource "aws_cloudwatch_dashboard" "ops" {
       {
         type = "metric", x = 12, y = 27, width = 12, height = 6
         properties = {
-          title  = "Data archiver: runs and errors (per minute)"
+          title  = "Data archiver: runs and errors"
           region = local.dash_region
           view   = "timeSeries"
           stat   = "Sum"
-          period = 60
+          period = local.dash_period
           metrics = [
             ["AWS/Lambda", "Invocations", "FunctionName", aws_lambda_function.data_archiver.function_name, { label = "Runs" }],
             ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.data_archiver.function_name, { label = "Errors" }],
