@@ -406,7 +406,7 @@ resource "aws_cloudwatch_dashboard" "ops" {
           region = local.dash_region
           view   = "timeSeries"
           stat   = "Maximum"
-          period = 300
+          period = 60
           metrics = [
             ["AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", aws_sqs_queue.orders.name, { label = "Orders waiting" }],
             ["AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", aws_sqs_queue.orders_dlq.name, { label = "Failed orders (DLQ)" }],
@@ -420,7 +420,7 @@ resource "aws_cloudwatch_dashboard" "ops" {
           region = local.dash_region
           view   = "timeSeries"
           stat   = "Maximum"
-          period = 300
+          period = 60
           metrics = [
             ["AWS/SQS", "ApproximateAgeOfOldestMessage", "QueueName", aws_sqs_queue.orders.name, { label = "Oldest order" }],
           ]
@@ -429,11 +429,11 @@ resource "aws_cloudwatch_dashboard" "ops" {
       {
         type = "metric", x = 16, y = 20, width = 8, height = 6
         properties = {
-          title  = "Order Lambdas: runs and errors (per 5 min)"
+          title  = "Order Lambdas: runs and errors (per minute)"
           region = local.dash_region
           view   = "timeSeries"
           stat   = "Sum"
-          period = 300
+          period = 60
           metrics = [
             ["AWS/Lambda", "Invocations", "FunctionName", aws_lambda_function.order_worker.function_name, { label = "Order worker runs" }],
             ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.order_worker.function_name, { label = "Order worker errors" }],
@@ -453,11 +453,11 @@ resource "aws_cloudwatch_dashboard" "ops" {
       {
         type = "metric", x = 0, y = 27, width = 12, height = 6
         properties = {
-          title  = "Report generator: runs and errors (per day)"
+          title  = "Report generator: runs and errors (per minute)"
           region = local.dash_region
           view   = "timeSeries"
           stat   = "Sum"
-          period = 86400
+          period = 60
           metrics = [
             ["AWS/Lambda", "Invocations", "FunctionName", aws_lambda_function.report_generator.function_name, { label = "Runs" }],
             ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.report_generator.function_name, { label = "Errors" }],
@@ -467,11 +467,11 @@ resource "aws_cloudwatch_dashboard" "ops" {
       {
         type = "metric", x = 12, y = 27, width = 12, height = 6
         properties = {
-          title  = "Data archiver: runs and errors (per day)"
+          title  = "Data archiver: runs and errors (per minute)"
           region = local.dash_region
           view   = "timeSeries"
           stat   = "Sum"
-          period = 86400
+          period = 60
           metrics = [
             ["AWS/Lambda", "Invocations", "FunctionName", aws_lambda_function.data_archiver.function_name, { label = "Runs" }],
             ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.data_archiver.function_name, { label = "Errors" }],
