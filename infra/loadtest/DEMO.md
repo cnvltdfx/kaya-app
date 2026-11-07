@@ -24,8 +24,6 @@ the stack is rebuilt.
 ## Before the demo (do the day before, and check again on the day)
 
 - [ ] ASG `kool-kaya-kitchen-api` is at **1** server (after a rehearsal it takes 15+ minutes to scale back in).
-- [ ] 3–5 orders placed with a card on your account, all showing **Processing** under My orders. Note their IDs (`KK…`).
-- [ ] Session token copied: on the site, signed in, run `JSON.parse(localStorage.kk_token)` in the browser console.
 - [ ] Order DLQ `kool-kaya-kitchen-orders-dlq` is empty.
 - [ ] WAF is still in **count** mode. In block mode the site rate limit (2,000 requests per 5 min per IP) blocks the ASG test.
 - [ ] A full rehearsal done, and screen-recorded as a backup in case the venue Wi-Fi fails.
@@ -86,13 +84,17 @@ Sends 50 requests/second (3,000/minute) through CloudFront to the API for 12 min
 
 ## Test 2: SQS burst
 
-```powershell
-node sqs-burst.mjs --orders KK100001,KK100002,KK100003 --count 20000 --token <token>
+```bat
+set AWS_PROFILE=kaya
+node sqs-burst.mjs --count 20000
 ```
 
 The script:
 
-1. Checks each order through the API and **refuses to run** if any is `pending_payment` or `cancelled`.
+1. Uses 10 of the seeded demo orders that are `processing` (paid, never awaiting payment), so there is
+   nothing to set up. It sends one test message per order first and **stops before the burst** unless
+   the worker's logs show it skipped all 10 without changing them. (`--orders KK…,KK…` uses your own
+   orders instead, but only ones the worker's logs show it settled as paid.)
 2. Sends `--count` messages, spread across the orders, in a few seconds.
 3. Prints the queue depth every 2 seconds until it is empty, then the DLQ count.
 
@@ -123,8 +125,8 @@ live. The burst is unaffected: its orders are already paid, and the expirer only
 orders. Don't place a live card order *during* the burst: if it waits in the queue for more than a minute,
 the expirer re-queues it and the customer can get a duplicate confirmation email.
 
-**Tuning:** pick `--count` in rehearsal so the queue takes 1–2 minutes to drain. 20,000 is a starting
-guess. Cost is negligible: SQS is about US$0.40 per million messages.
+**Tuning:** pick `--count` in rehearsal so the queue takes 1–2 minutes to drain. In testing, 100
+messages drained in about 8 seconds; start at 20,000 and adjust. Cost is negligible: SQS is about US$0.40 per million messages.
 
 ## Troubleshooting
 
@@ -133,8 +135,9 @@ guess. Cost is negligible: SQS is about US$0.40 per million messages.
 | ASG doesn't scale after 8 minutes | `asg_max_size` still 1, or k6 not reaching the API | Check the ASG's max; check k6's `status 200` rate |
 | k6 shows 403s | WAF switched to block mode | Set `waf_mode = "count"` for the demo |
 | k6 shows 5xx or slow responses | Database or servers overloaded | Lower `-e RATE=30`; check the dashboard's CPU graphs |
-| Burst script: `API returned 401/404` | Token expired, or order isn't on this account | Copy a fresh token; use your own order IDs |
-| Burst script refuses an order | Order is `pending_payment` or `cancelled` | Use an order that is Processing |
+| Burst script: `Test message for KK… failed` | Seeded order missing (database reseeded or orders deleted) | Ask before using other orders; the few test messages reach the DLQ in about 15 min |
+| Burst script: `No result in the worker logs after 90 s` | Worker's SQS trigger disabled, or worker failing | Lambda console → order worker → Configuration → Triggers |
+| Burst script: `not safe to use: KK…` | An `--orders` ID the worker never settled as paid | Leave out `--orders` to use the seeded orders |
 | Queue drains in a few seconds | Burst too small to see | Raise `--count` |
 | DLQ not 0 | Worker errors | Check logs in `/aws/lambda/kool-kaya-kitchen-order-worker` for `order.failed` |
 
