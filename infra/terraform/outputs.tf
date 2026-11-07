@@ -102,6 +102,15 @@ output "report_generator_function" {
   value = aws_lambda_function.report_generator.function_name
 }
 
+output "report_dashboard_function" {
+  value = aws_lambda_function.report_dashboard.function_name
+}
+
+output "report_dashboard_link_command" {
+  description = "Prints a link to the latest dashboard that works for an hour (the reports bucket is private)."
+  value       = "aws s3 presign s3://${aws_s3_bucket.reports.bucket}/${local.report_dashboard_latest_key} --expires-in 3600 --region ${var.aws_region}"
+}
+
 output "archive_bucket" {
   value = aws_s3_bucket.archive.bucket
 }

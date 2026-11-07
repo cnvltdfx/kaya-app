@@ -4,10 +4,17 @@
 # the app writes them to the bucket. Each sales report also rewrites reports/quicksight/sales.csv
 # (all paid orders), the one file the QuickSight dataset reads. Once the data moves to Aurora,
 # the Lambda queries it directly instead.
+#
+# Free dashboard (no QuickSight): EventBridge Scheduler -> report-dashboard Lambda (VPC) -> MySQL ->
+# one self-contained HTML dashboard in the same bucket, under reports/dashboard/. It runs on the Free
+# plan, and needs neither QuickSight nor the API servers. See the end of this file.
 
 locals {
   report_generator_name = "${var.project_name}-report-generator"
+  report_dashboard_name = "${var.project_name}-report-dashboard"
   reports_port          = 3001 # private report port on the API servers; the ALB never routes to it
+
+  report_dashboard_latest_key = "reports/dashboard/latest.html" # written by infra/lambdas/report-dashboard
 
   # Cron in Asia/Singapore time. The daily run matches the app's old in-process 00:05 timer.
   report_schedules = {
@@ -222,5 +229,66 @@ resource "aws_quicksight_refresh_schedule" "sales" {
       time_of_the_day = "00:30"
       timezone        = "Asia/Singapore"
     }
+  }
+}
+
+# ---- Free dashboard: scheduled event -> report-dashboard Lambda -> MySQL -> HTML in the reports bucket.
+# The Lambda reads paid orders and stock straight from the database (read-only) and writes one
+# self-contained page twice: reports/dashboard/YYYY/MM/DD/dashboard-<SGT time>.html and
+# reports/dashboard/latest.html. It runs at 00:30 SGT by default, the slot of the QuickSight refresh above.
+
+data "archive_file" "report_dashboard" {
+  type        = "zip"
+  source_dir  = "${path.module}/../lambdas/report-dashboard"
+  output_path = "${path.module}/build/report-dashboard.zip"
+  excludes    = ["test"] # node_modules (mysql2) is included: run `npm ci --omit=dev` there first
+}
+
+resource "aws_cloudwatch_log_group" "report_dashboard" {
+  name              = "/aws/lambda/${local.report_dashboard_name}"
+  retention_in_days = 14
+}
+
+resource "aws_lambda_function" "report_dashboard" {
+  function_name    = local.report_dashboard_name
+  role             = aws_iam_role.report_dashboard.arn
+  runtime          = "nodejs22.x"
+  handler          = "index.handler"
+  filename         = data.archive_file.report_dashboard.output_path
+  source_code_hash = data.archive_file.report_dashboard.output_base64sha256
+  timeout          = 60
+  memory_size      = 256
+
+  # App subnet: reaches the database directly, and Secrets Manager and S3 through the NAT instance.
+  vpc_config {
+    subnet_ids         = [aws_subnet.app.id]
+    security_group_ids = [aws_security_group.report_dashboard.id]
+  }
+
+  environment {
+    variables = {
+      REPORTS_BUCKET = aws_s3_bucket.reports.bucket
+      DB_HOST        = aws_db_instance.main.address
+      DB_NAME        = var.db_name
+      DB_SECRET_ARN  = aws_db_instance.main.master_user_secret[0].secret_arn
+    }
+  }
+
+  depends_on = [aws_cloudwatch_log_group.report_dashboard, aws_iam_role_policy_attachment.report_dashboard_vpc]
+}
+
+# Uses the same scheduler role as the report schedules above.
+resource "aws_scheduler_schedule" "report_dashboard" {
+  name                         = "${var.project_name}-report-dashboard"
+  schedule_expression          = var.report_dashboard_schedule
+  schedule_expression_timezone = "Asia/Singapore"
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  target {
+    arn      = aws_lambda_function.report_dashboard.arn
+    role_arn = aws_iam_role.report_scheduler.arn
   }
 }

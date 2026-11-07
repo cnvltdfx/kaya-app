@@ -231,3 +231,14 @@ variable "quicksight_user_arn" {
   type        = string
   default     = null
 }
+
+variable "report_dashboard_schedule" {
+  description = "When the free HTML sales dashboard is regenerated, in Asia/Singapore time: an EventBridge Scheduler cron() or rate() expression. Default: 00:30 daily, after the 00:05 reports."
+  type        = string
+  default     = "cron(30 0 * * ? *)"
+
+  validation {
+    condition     = can(regex("^(cron|rate)\\(.+\\)$", var.report_dashboard_schedule))
+    error_message = "report_dashboard_schedule must be a cron(...) or rate(...) expression."
+  }
+}
