@@ -40,23 +40,28 @@ resource "aws_launch_template" "app" {
     }
   }
 
-  user_data = base64encode(templatefile("${path.module}/user_data.sh.tftpl", {
-    region          = var.aws_region
-    registry        = split("/", aws_ecr_repository.app.repository_url)[0]
-    image           = "${aws_ecr_repository.app.repository_url}:${var.image_tag}"
-    app_port        = var.app_port
-    reports_port    = local.reports_port
-    s3_bucket       = aws_s3_bucket.reports.bucket
-    kms_key_id      = aws_kms_key.main.arn
-    db_host         = aws_db_instance.main.address
-    db_name         = var.db_name
-    db_secret_arn   = aws_db_instance.main.master_user_secret[0].secret_arn
-    order_queue_url = aws_sqs_queue.orders.url
-    asg_name        = local.asg_name
-    hook_name       = local.launch_hook_name
+  # A Windows checkout can give the template CRLF line endings, which would break the script on Linux.
+  user_data = base64encode(replace(templatefile("${path.module}/user_data.sh.tftpl", {
+    region               = var.aws_region
+    registry             = split("/", aws_ecr_repository.app.repository_url)[0]
+    image                = "${aws_ecr_repository.app.repository_url}:${var.image_tag}"
+    app_port             = var.app_port
+    reports_port         = local.reports_port
+    s3_bucket            = aws_s3_bucket.reports.bucket
+    kms_key_id           = aws_kms_key.main.arn
+    db_host              = aws_db_instance.main.address
+    db_name              = var.db_name
+    db_secret_arn        = aws_db_instance.main.master_user_secret[0].secret_arn
+    order_queue_url      = aws_sqs_queue.orders.url
+    cognito_user_pool_id = aws_cognito_user_pool.main.id
+    cognito_client_id    = aws_cognito_user_pool_client.web.id
+    cognito_domain       = local.cognito_domain
+    cognito_redirect_uri = local.cognito_redirect_uri
+    asg_name             = local.asg_name
+    hook_name            = local.launch_hook_name
     # CloudFront -> ALB -> app adds a hop; only trust it when the ALB accepts CloudFront alone.
     trust_proxy_hops = var.restrict_alb_to_cloudfront ? 2 : 1
-  }))
+  }), "\r\n", "\n"))
 
   tag_specifications {
     resource_type = "instance"

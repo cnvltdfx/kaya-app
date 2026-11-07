@@ -13,7 +13,7 @@ cd backend
 npm install
 docker compose up -d # MySQL 8.4 on localhost:3306
 npm start            # http://localhost:3000  (creates the tables and seeds demo data on first run)
-npm test             # 14 end-to-end API tests, against the kaya_test database
+npm test             # 26 end-to-end API tests, against the kaya_test database
 npm run seed         # wipe and reseed the local database
 npm run report       # generate sales + inventory reports from the CLI (scheduled-task entry point)
 npm run images       # regenerate the product SVGs in frontend/img/products
@@ -40,10 +40,10 @@ All data lives in MySQL (RDS in AWS). See [backend/DATABASE.md](backend/DATABASE
 | Role | Email | Password | Notes |
 |---|---|---|---|
 | Customer | `demo@koolkaya.sg` | `Demo@1234` | Has order history in SG |
-| Staff | `staff@koolkaya.sg` | `Staff@1234` | MFA off for now |
-| Admin | `admin@koolkaya.sg` | `Admin@1234` | MFA off for now |
+| Staff | `staff@koolkaya.sg` | `Staff@1234` | Local only |
+| Admin | `admin@koolkaya.sg` | `Admin@1234` | Local only |
 
-These are seeded into an empty database, in AWS too. MFA applies to any account that turns it on in Account → Profile. In development, the MFA code and password-reset link are shown on screen. They're also in Back office → Notifications. When `NODE_ENV=production` they're only "sent" by email.
+These passwords work **only in local development**, where the API runs without Cognito config. MFA applies to any local account that turns it on in Account → Security, and the MFA code and password-reset link are shown on screen. In AWS, everyone signs in through Amazon Cognito and these passwords do nothing, even if the accounts were seeded (see [infra/terraform/README.md](infra/terraform/README.md#staff-and-admin-users)).
 
 **Test cards** (simulated gateway): `4242 4242 4242 4242` succeeds, `4000 0000 0000 0002` is declined. Use any future expiry and any CVC. PayNow orders show a QR code and a "Simulate bank confirmation" button.
 
@@ -58,9 +58,9 @@ These are seeded into an empty database, in AWS too. MFA applies to any account 
 | Reviews & ratings | Product page ("Verified buyer" badge if purchased) |
 | Promotions / sales | Sale prices plus promo codes `WELCOME10`, `KAYA1111` (min S$30), `FREESHIP` |
 | Help page | FAQ, shipping fees per market, contact |
-| Register / log in (email + SSO) | Email/password; Google/Apple SSO (demo flow, Cognito-ready) |
-| Reset password | Forgot password → emailed token (30 min expiry) |
-| Profile management | Account → Profile (name, email, phone, address, market, language) |
+| Register / log in | Amazon Cognito Managed Login (email + password); local forms in development |
+| Reset password | Cognito's forgot-password flow, by emailed code |
+| Profile management | Account → Profile (name, phone, address, market, language; email comes from the sign-in account) |
 | Checkout: delivery or pick-up, payment method | Delivery (all markets) or self pick-up with time slot (SG) |
 | Pay by card / PayNow / Apple Pay, with receipt | Simulated gateway; printable receipt; only last 4 digits stored |
 | Order history & status | Account → Orders, status timeline per order |
@@ -71,7 +71,7 @@ These are seeded into an empty database, in AWS too. MFA applies to any account 
 ### Non-functional (as built)
 - **Availability:** stateless app servers (sessions, carts and everything else live in MySQL), so any number can run behind the load balancer; `/health` for the load balancer and `/ready` (checks the database). Recommendations are optional: if that service fails (`RECS_FAIL_RATE=0.5`), the rest of the page still loads.
 - **Consistency:** stock is reserved before payment, with a conditional `UPDATE` so concurrent shoppers on different servers can't oversell, and released if payment fails. An `Idempotency-Key` header (backed by a unique index) prevents duplicate orders on retry. Order status changes only apply from the expected state, so two people can't act on the same order at once.
-- **Security:** scrypt password hashing; session and reset tokens stored only as hashes; optional email MFA (off for the seeded staff accounts for now); role-based access control; rate limiting on auth and checkout (bot mitigation, like AWS WAF rate rules); CSP/HSTS headers; output escaping; audit log; card numbers never stored.
+- **Security:** Amazon Cognito holds passwords and handles sign-in, with staff and admin roles taken from Cognito groups at each login; session tokens stored only as hashes; no MFA yet; role-based access control; rate limiting on auth and checkout (bot mitigation, like AWS WAF rate rules); CSP/HSTS headers; output escaping; audit log; card numbers never stored.
 - **Observability:** structured JSON logs with trace IDs; live p50/p95 latency and error rate **per service and per market**; SLO alerts (latency, error rate), plus low-stock and report-failure alerts.
 - **Localisation:** SGD / MYR / THB / HKD pricing; English, Simplified Chinese, Traditional Chinese, Malay and Thai; dates shown in each market's time zone.
 
@@ -82,7 +82,7 @@ These are seeded into an empty database, in AWS too. MFA applies to any account 
 | Web frontend (`frontend/`) | Express static (local dev only) | S3 + CloudFront (edge caching for MY/TH/HK latency) |
 | API services (`backend/src/services/*`) | One Express process, one router per service | ECS Fargate services behind an ALB (multi-AZ), auto-scaling on CPU/request count; scheduled scale-up before 11.11 |
 | Data (`backend/src/lib/db.js`) | MySQL 8 in Docker (`backend/docker-compose.yml`) | RDS for MySQL (Aurora MySQL Serverless v2 after leaving the Free plan); credentials from Secrets Manager. See [DATABASE.md](backend/DATABASE.md) |
-| Auth (`auth.js`) | scrypt + session tokens + email MFA | Amazon Cognito (hosted UI, Google/Apple IdPs, MFA) |
+| Auth (`auth.js`, `cognito.js`) | scrypt + session tokens + email MFA | Amazon Cognito Managed Login; the API then issues its own session |
 | Payments (`payments.js`) | Simulated gateway | Stripe/Adyen; keys in Secrets Manager |
 | Notifications (`notifications.js`) | Outbox table | SQS → Lambda → SES (email) / SNS (SMS) |
 | Reports (`reports.js`) | `./reports/…` or S3 via AWS SDK | **S3** (SSE-KMS, lifecycle to Glacier), triggered by EventBridge Scheduler |

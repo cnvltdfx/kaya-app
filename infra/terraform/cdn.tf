@@ -166,6 +166,7 @@ resource "aws_s3_object" "frontend_config" {
     window.KK_CONFIG = {
       apiBase: '',
       paymentTimeoutMinutes: ${var.order_payment_timeout_minutes},
+      cognito: { domain: '${local.cognito_domain}', clientId: '${aws_cognito_user_pool_client.web.id}' },
     };
   JS
 }

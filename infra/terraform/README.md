@@ -102,7 +102,22 @@ terraform output -raw alb_dns_name   # the API directly, until step 11 locks the
 
 The first instance takes a few minutes to become healthy after the apply finishes.
 
-**Demo accounts** (seeded into an empty database; see `backend/DATABASE.md`): `demo@koolkaya.sg` / `Demo@1234`, `staff@koolkaya.sg` / `Staff@1234` and `admin@koolkaya.sg` / `Admin@1234`. MFA is off for all three, so the back office works in AWS too.
+### Staff and admin users
+
+Everyone signs in through Amazon Cognito. Customers sign up themselves. The seeded demo passwords don't work in AWS, and accounts from before Cognito aren't linked: signing up with one of those emails retires the old row, which keeps its orders for reporting.
+
+Create staff with a real email address, because Cognito sends the temporary password there. Use the group `staff` or `admin`:
+
+```sh
+POOL=$(terraform output -raw cognito_user_pool_id)
+aws cognito-idp admin-create-user --user-pool-id "$POOL" --username person@example.com \
+  --user-attributes Name=email,Value=person@example.com Name=email_verified,Value=true Name=name,Value="Person Name"
+aws cognito-idp admin-add-user-to-group --user-pool-id "$POOL" --username person@example.com --group-name admin
+```
+
+The role is read at each login, so a group change applies the next time that person signs in. To cut someone off straight away, remove them from the group or disable them in Cognito, then delete their rows from the `sessions` table: their Kaya session otherwise lasts up to 7 days.
+
+Cognito's default sender has a low daily email limit. Move to SES (`email_configuration` in `cognito.tf`) before real traffic.
 
 ## 6. Get a shell on the instance (no SSH)
 

@@ -13,7 +13,7 @@
     const { S, esc } = window.KK;
     clearInterval(refreshTimer);
     app.innerHTML = `
-      <div class="admin-head"><h1 style="margin:0">Back office</h1><span class="muted small">Signed in as ${esc(S.user.name)} · <span class="pill pill-green">${esc(S.user.role)}</span> · MFA ✓</span></div>
+      <div class="admin-head"><h1 style="margin:0">Back office</h1><span class="muted small">Signed in as ${esc(S.user.name)} · <span class="pill pill-green">${esc(S.user.role)}</span></span></div>
       <nav class="tabs">${TABS.map(([k, l]) => `<a href="#/admin/${k}" class="${tab === k ? 'active' : ''}">${l}</a>`).join('')}</nav>
       <div id="admin-body"></div>`;
     const body = document.getElementById('admin-body');
