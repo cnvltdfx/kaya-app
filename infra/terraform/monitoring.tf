@@ -249,6 +249,30 @@ resource "aws_cloudwatch_metric_alarm" "nat_status_check" {
   ok_actions    = local.alarm_actions
 }
 
+# ---- Reporting
+
+# The daily report-dashboard Lambda (reporting.tf) failed, e.g. the database or NAT was down.
+# Staff would keep seeing yesterday's sales dashboard until the next successful run.
+resource "aws_cloudwatch_metric_alarm" "report_dashboard_errors" {
+  alarm_name          = "${var.project_name}-report-dashboard-errors"
+  alarm_description   = "The daily report-dashboard Lambda failed (database or NAT unreachable?). Staff still see the previous sales dashboard; check the Lambda's logs."
+  namespace           = "AWS/Lambda"
+  metric_name         = "Errors"
+  statistic           = "Sum"
+  period              = 3600
+  evaluation_periods  = 1
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = 0
+  treat_missing_data  = "notBreaching"
+
+  dimensions = {
+    FunctionName = aws_lambda_function.report_dashboard.function_name
+  }
+
+  alarm_actions = local.alarm_actions
+  ok_actions    = local.alarm_actions
+}
+
 # ---- Outputs
 
 output "ops_alerts_topic_arn" {
@@ -281,6 +305,7 @@ locals {
     aws_cloudwatch_metric_alarm.order_expirer_errors.arn,
     aws_cloudwatch_metric_alarm.data_archiver_errors.arn,
     aws_cloudwatch_metric_alarm.archive_schedule_dlq.arn,
+    aws_cloudwatch_metric_alarm.report_dashboard_errors.arn,
   ]
 }
 
@@ -474,14 +499,16 @@ resource "aws_cloudwatch_dashboard" "ops" {
       {
         type = "metric", x = 0, y = 27, width = 12, height = 6
         properties = {
-          title  = "Report generator: runs and errors"
+          title  = "Reports: runs and errors"
           region = local.dash_region
           view   = "timeSeries"
           stat   = "Sum"
           period = local.dash_period
           metrics = [
-            ["AWS/Lambda", "Invocations", "FunctionName", aws_lambda_function.report_generator.function_name, { label = "Runs" }],
-            ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.report_generator.function_name, { label = "Errors" }],
+            ["AWS/Lambda", "Invocations", "FunctionName", aws_lambda_function.report_generator.function_name, { label = "Report generator runs" }],
+            ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.report_generator.function_name, { label = "Report generator errors" }],
+            ["AWS/Lambda", "Invocations", "FunctionName", aws_lambda_function.report_dashboard.function_name, { label = "Sales dashboard runs" }],
+            ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.report_dashboard.function_name, { label = "Sales dashboard errors" }],
           ]
         }
       },

@@ -33,6 +33,7 @@ So CloudWatch does the watching and deciding, and SNS does the notifying.
 | Database | `db-cpu-high` | CPU > 80% for 15 min | An overloaded database slows down the whole site |
 | Database | `db-storage-low` | Less than 2 GB free | When it fills up, new orders can't be saved |
 | NAT | `nat-status-check` | NAT fails its status check | Private servers lose access to ECR, S3 and Secrets Manager, and new servers can't start |
+| Reporting | `report-dashboard-errors` | The daily report-dashboard Lambda fails (e.g. database or NAT down) | Staff keep seeing yesterday's sales dashboard and nobody would know |
 
 Thresholds are variables at the top of `monitoring.tf` (`alarm_cpu_percent`, `alarm_p95_latency_seconds`, `alarm_5xx_count`, `alarm_db_free_storage_gb`).
 
@@ -52,11 +53,11 @@ Other parts of the system send their alarms to the ops alerts topic too, through
 
 | Row | Graphs |
 |---|---|
-| Alarm status | All 11 alarms above, green (OK) or red (ALARM) |
+| Alarm status | All 12 alarms above, green (OK) or red (ALARM) |
 | Website (load balancer) | Requests per minute, 5xx errors, response time (p50 and p95), healthy and unhealthy servers |
 | Servers and database | CPU for API servers, database and NAT; database connections; free database storage (GB) |
 | Order processing | Orders waiting in the queue and failed orders (DLQ), oldest order waiting, runs and errors for the order worker, email sender and order expirer |
-| Reporting and data archival | Daily runs and errors for the report generator and the data archiver, missed archive schedules |
+| Reporting and data archival | Runs and errors for the report generator, the sales dashboard (report-dashboard) and the data archiver, missed archive schedules |
 
 Graphs that have an alarm show the alarm threshold as a horizontal line.
 
@@ -66,7 +67,7 @@ Graphs that have an alarm show the alarm threshold as a horizontal line.
 
 1. **Variables**: `alert_emails` and the alarm thresholds. Change a threshold by changing its `default`.
 2. **SNS topic and subscriptions**: `aws_sns_topic.ops_alerts`, plus one email subscription per address in `alert_emails` (`for_each`).
-3. **Alarms**: 8 `aws_cloudwatch_metric_alarm` blocks, all in the same format. For example:
+3. **Alarms**: 9 `aws_cloudwatch_metric_alarm` blocks, all in the same format. For example:
    ```hcl
    resource "aws_cloudwatch_metric_alarm" "api_cpu_high" {
      namespace           = "AWS/EC2"              # which service
@@ -113,6 +114,6 @@ To check who is subscribed: AWS console → SNS → Topics → `kool-kaya-kitche
 
 ## Cost
 
-- Alarms: 11 in total use the topic. The CloudWatch free tier covers 10, so expect about US$0.10 a month.
+- Alarms: 12 in total use the topic. The CloudWatch free tier covers 10, so expect about US$0.20 a month.
 - Dashboard: 1 dashboard with about 26 metrics, within the free tier (3 dashboards, 50 metrics each).
 - SNS email: free for the first 1,000 emails a month.
