@@ -40,15 +40,17 @@ Open these tabs, in this order:
 
 ## Run order
 
-The ASG needs about 3 minutes of sustained traffic before it reacts, so start k6 first, run the SQS
-test while the ASG is still at 1 server, then come back to the ASG.
+The ASG takes about 6 minutes of sustained traffic to react (rehearsal: load started 18:38, scaling
+fired 18:44, because load balancer metrics reach CloudWatch late), and new servers are in service 1–2
+minutes after that. So start k6 about 8 minutes before you want to show the ASG, run the SQS test while
+it is still at 1 server, then come back to the ASG.
 
 | Time | Do | Say |
 |---|---|---|
-| 0:00 | Terminal 1: start k6 (Test 1) | "Steady shopper traffic, 50 requests a second." |
-| 0:30 | Terminal 2: start the burst (Test 2) | "Now a burst of payment confirmations, like midnight on 11.11." |
-| 0:30–3:00 | Show queue draining, worker concurrency, ASG still at 1 | See Test 2 talking points |
-| 3:00–6:00 | Show the ASG Activity tab and "API servers" graph go 1 → 3 | See Test 1 talking points |
+| T−8 min | Terminal 1: start k6 (Test 1), then carry on with earlier slides | (nothing yet) |
+| T+0 | Terminal 2: start the burst (Test 2) | "A burst of payment confirmations, like midnight on 11.11." |
+| T+0 to T+2 | Show queue draining, worker concurrency, ASG still at 1 | See Test 2 talking points |
+| T+2 to T+4 | Show the ASG Activity tab, "API servers" going 1 → 3, and CPU | See Test 1 talking points |
 | End | Stop k6 with Ctrl+C | "Scale-in is deliberately slow, so we don't drop servers mid-spike." |
 
 ## Test 1: ASG scaling
@@ -62,10 +64,18 @@ Sends 50 requests/second (3,000/minute) through CloudFront to the API for 12 min
 
 **Expected**
 
-- About 3 minutes in: the `alb-requests-target-tracking` policy fires (target: 1,000 requests per server per minute, so 3,000/min asks for 3 servers).
-- The Activity tab shows instances launching from the warm pool; about 1–2 minutes later they pass health checks.
+- About 6 minutes in: the `alb-requests-target-tracking` policy fires (target: 1,000 requests per server per minute, so 3,000/min asks for 3 servers).
+- The Activity tab shows the warm-pool instances starting; about 1–2 minutes later they pass health checks.
 - Dashboard: "API servers behind the load balancer" goes 1 → 3, and requests per server drop.
 - k6 summary: `status 200` checks close to 100%.
+
+**Showing CPU**
+
+- Dashboard `kool-kaya-kitchen-ops` → **CPU (%)**: API servers (ASG average), database and NAT on one graph.
+- Per server: EC2 → Auto Scaling groups → `kool-kaya-kitchen-api` → **Monitoring** tab → EC2 metrics.
+- Expect it to stay low. In rehearsal, one t3.micro peaked at about 6.5% at 3,000 requests/minute, and the database at about 5%.
+- The servers use basic monitoring, so CPU has one point every **5 minutes**: the graph lags and looks steppy. Requests and server count update every minute.
+- Use it as a talking point: scaling fired on requests per server while CPU was at about 6%, so capacity is added before the servers are under strain. The CPU policy (50% target) is the backstop for heavier requests.
 
 **Talking points**
 
@@ -120,7 +130,7 @@ guess. Cost is negligible: SQS is about US$0.40 per million messages.
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| ASG doesn't scale after 5 minutes | `asg_max_size` still 1, or k6 not reaching the API | Check the ASG's max; check k6's `status 200` rate |
+| ASG doesn't scale after 8 minutes | `asg_max_size` still 1, or k6 not reaching the API | Check the ASG's max; check k6's `status 200` rate |
 | k6 shows 403s | WAF switched to block mode | Set `waf_mode = "count"` for the demo |
 | k6 shows 5xx or slow responses | Database or servers overloaded | Lower `-e RATE=30`; check the dashboard's CPU graphs |
 | Burst script: `API returned 401/404` | Token expired, or order isn't on this account | Copy a fresh token; use your own order IDs |
