@@ -1,6 +1,6 @@
 # Load test demo: ASG scaling and SQS burst
 
-Two live tests, about 6–8 minutes together:
+Two live tests, about 4 minutes on stage (k6 starts 4 minutes earlier, during your slides):
 
 1. **ASG scaling:** steady web traffic makes the Auto Scaling group add API servers (1 → 3).
 2. **SQS burst:** a burst of thousands of order messages lands in the order queue. The EC2 servers don't
@@ -38,17 +38,21 @@ Open these tabs, in this order:
 
 ## Run order
 
-The ASG takes about 6 minutes of sustained traffic to react (rehearsal: load started 18:38, scaling
-fired 18:44, because load balancer metrics reach CloudWatch late), and new servers are in service 1–2
-minutes after that. So start k6 about 8 minutes before you want to show the ASG, run the SQS test while
-it is still at 1 server, then come back to the ASG.
+Measured twice: the scaling alarm fires about **6 minutes** after k6 starts, and the warm-pool servers
+are healthy about **20 seconds** later (run 2: k6 19:21:57, alarm 19:27:56, 3 healthy 19:28:20, so
+6m20s in all). The wait is the alarm: it needs 3 one-minute readings over target, and load balancer
+metrics reach CloudWatch about 3 minutes late. It is AWS-managed, so the wait can't be shortened.
+
+So start k6 about 4 minutes before the SQS test, while you're on earlier slides. The ASG is still at 1
+server during the burst, and scales out just as you finish it.
 
 | Time | Do | Say |
 |---|---|---|
-| T−8 min | Terminal 1: start k6 (Test 1), then carry on with earlier slides | (nothing yet) |
+| T−4 min | Terminal 1: start k6 (Test 1), then carry on with earlier slides | (nothing yet) |
 | T+0 | Terminal 2: start the burst (Test 2) | "A burst of payment confirmations, like midnight on 11.11." |
 | T+0 to T+2 | Show queue draining, worker concurrency, ASG still at 1 | See Test 2 talking points |
-| T+2 to T+4 | Show the ASG Activity tab, "API servers" going 1 → 3, and CPU | See Test 1 talking points |
+| About T+2 | The ASG alarm fires (about 6 min into k6) | "Meanwhile, web traffic has been building up..." |
+| T+2:30 to T+4 | Show the ASG Activity tab, "API servers" going 1 → 3, and CPU | See Test 1 talking points |
 | End | Stop k6 with Ctrl+C | "Scale-in is deliberately slow, so we don't drop servers mid-spike." |
 
 ## Test 1: ASG scaling
@@ -63,7 +67,7 @@ Sends 50 requests/second (3,000/minute) through CloudFront to the API for 12 min
 **Expected**
 
 - About 6 minutes in: the `alb-requests-target-tracking` policy fires (target: 1,000 requests per server per minute, so 3,000/min asks for 3 servers).
-- The Activity tab shows the warm-pool instances starting; about 1–2 minutes later they pass health checks.
+- The Activity tab shows "Launching a new EC2 instance from warm pool" twice; about 20 seconds later both are healthy behind the load balancer (3 in all). The ASG then refills the warm pool in the background.
 - Dashboard: "API servers behind the load balancer" goes 1 → 3, and requests per server drop.
 - k6 summary: `status 200` checks close to 100%.
 
@@ -78,7 +82,7 @@ Sends 50 requests/second (3,000/minute) through CloudFront to the API for 12 min
 **Talking points**
 
 - Scaling is driven by requests per server, not just CPU, so it reacts to traffic directly.
-- The warm pool keeps pre-built, stopped servers, so a scale-out skips the boot and image download.
+- The warm pool keeps pre-built, stopped servers, so a scale-out skips the boot and image download: about 20 seconds to healthy, not minutes.
 - Traffic comes through CloudFront and WAF; the load balancer only accepts traffic from CloudFront.
 - Scale-in waits about 15 minutes of low traffic, so short dips don't remove servers.
 
