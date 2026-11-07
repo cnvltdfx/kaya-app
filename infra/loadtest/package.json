@@ -1,0 +1,13 @@
+{
+  "name": "kool-kaya-kitchen-loadtest",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Demo load tests: k6 traffic for ASG scaling (asg-load.js), SQS order burst (sqs-burst.mjs).",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@aws-sdk/client-sqs": "^3.1161.0"
+  }
+}

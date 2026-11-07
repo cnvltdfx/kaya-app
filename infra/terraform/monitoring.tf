@@ -457,6 +457,7 @@ resource "aws_cloudwatch_dashboard" "ops" {
           metrics = [
             ["AWS/Lambda", "Invocations", "FunctionName", aws_lambda_function.order_worker.function_name, { label = "Order worker runs" }],
             ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.order_worker.function_name, { label = "Order worker errors" }],
+            ["AWS/Lambda", "ConcurrentExecutions", "FunctionName", aws_lambda_function.order_worker.function_name, { stat = "Maximum", yAxis = "right", label = "Order workers running at once (right)" }],
             ["AWS/Lambda", "Invocations", "FunctionName", aws_lambda_function.email_sender.function_name, { label = "Email sender runs" }],
             ["AWS/Lambda", "Errors", "FunctionName", aws_lambda_function.email_sender.function_name, { label = "Email sender errors" }],
             ["AWS/Lambda", "Invocations", "FunctionName", aws_lambda_function.order_expirer.function_name, { label = "Order expirer runs" }],
