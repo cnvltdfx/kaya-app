@@ -14,7 +14,6 @@ or presenting: alarm emails can fire, and the stack serves everyone's testing.
 | What | Why |
 |---|---|
 | `terraform.tfvars`: `asg_max_size = 3`, `warm_pool_min_size = 2` | Lets the ASG scale out, and starts new servers from a warm pool (faster) |
-| `terraform.tfvars`: no `order_payment_timeout_minutes = 1` / `order_expiry_schedule = "rate(1 minute)"` | The 1-minute expiry cancels unpaid orders and re-queues paid ones during the demo |
 | Apply: `terraform plan -out demo.tfplan`, review, `terraform apply demo.tfplan` | Also adds "Order workers running at once" to the dashboard |
 | `winget install k6` | Load generator for the ASG test |
 | `cd infra/loadtest; npm ci` | AWS SDK for the burst script |
@@ -107,6 +106,12 @@ Watch the queue again without sending: `node sqs-burst.mjs --watch-only`.
 - Nothing is lost: a message that fails is retried, and after 5 failures it is kept in the dead-letter queue for staff.
 - SQS delivers at least once. The worker locks the order row and only changes an order still awaiting payment, so repeats are safe.
 - Limit: Lambda in this account runs at most 10 functions at once (a new-account quota), shared with the email sender. It can be raised to 1,000 on request.
+
+**Checkout expiry:** `terraform.tfvars` keeps a 1-minute payment timeout (`order_payment_timeout_minutes = 1`,
+checked every minute) so an unpaid PayNow order is cancelled within about 2 minutes, short enough to show
+live. The burst is unaffected: its orders are already paid, and the expirer only looks at `pending_payment`
+orders. Don't place a live card order *during* the burst: if it waits in the queue for more than a minute,
+the expirer re-queues it and the customer can get a duplicate confirmation email.
 
 **Tuning:** pick `--count` in rehearsal so the queue takes 1–2 minutes to drain. 20,000 is a starting
 guess. Cost is negligible: SQS is about US$0.40 per million messages.
