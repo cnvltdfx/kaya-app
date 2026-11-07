@@ -83,6 +83,7 @@ The first line copies your AWS session into the shell. The credential helper nee
 (cd infra/lambdas/order-worker && npm ci --omit=dev)   # the order worker's zip bundles mysql2
 (cd infra/lambdas/order-expirer && npm ci --omit=dev)  # so does the order expirer's
 (cd infra/lambdas/data-archiver && npm ci --omit=dev)  # the archiver's zip bundles mysql2 and hyparquet-writer
+(cd infra/lambdas/report-dashboard && npm ci --omit=dev)  # so does the report dashboard's
 cd infra/terraform
 terraform apply
 ```
@@ -165,6 +166,8 @@ EventBridge Scheduler → report-generator Lambda (in the VPC) → API server �
 
 Back office → Reports works as before and lists the scheduled runs too. Every instance reads the same database, so the reports are complete whichever instance the Lambda picks.
 
+QuickSight is paid. On the Free plan, use the [free dashboard](#free-dashboard-no-quicksight) instead.
+
 ### Deploy the report generator
 
 The report port is new app code, so build and push a new image first (step 3). Then:
@@ -179,6 +182,35 @@ The apply changes the instances' user data (it opens the report port), so the in
 aws lambda invoke --function-name "$(terraform output -raw report_generator_function)" --cli-binary-format raw-in-base64-out --payload '{"reports":[{"type":"sales","days":1},{"type":"inventory"}]}' build/report-invoke.json
 aws s3 ls "s3://$(terraform output -raw reports_bucket)/reports/" --recursive
 ```
+
+### Free dashboard (no QuickSight)
+
+QuickSight bills per user, so `reporting.tf` also builds a dashboard that runs on the Free plan:
+
+EventBridge Scheduler → report-dashboard Lambda (in the VPC) → MySQL → S3 reports bucket
+
+- **Schedule:** daily at 00:30 Singapore time, when the QuickSight refresh would run (`report_dashboard_schedule`). It uses the reports' scheduler role.
+- **Report dashboard** (`infra/lambdas/report-dashboard`): reads paid orders from the last 180 days, and the stock levels, straight from the database (read-only). It needs neither the API servers nor the CSV reports.
+- **Output:** one HTML page with everything inlined, written twice to the reports bucket: `reports/dashboard/YYYY/MM/DD/dashboard-<time>.html` for each run, and `reports/dashboard/latest.html`, always the newest. The page holds no customer names, emails or addresses.
+- **In the page:**
+  - A **Sales** sheet, filtered by period (today, or the last 7, 30 or 90 days, each compared with the period before) and by market.
+  - Revenue, orders, average order value, units and customers, each with its change and a trend line.
+  - Revenue by day, market and product, item sales by product and market, payment methods, fulfilment, order status and promo codes.
+  - An **Inventory** sheet: stock levels, low and out-of-stock products, and days of cover.
+  - Tooltips, every chart as a table, and the viewer's light or dark mode.
+
+Step 4 creates it with everything else. On a stack that's already up, run `(cd infra/lambdas/report-dashboard && npm ci --omit=dev)` from the repo root, then `terraform apply` here. It doesn't need a new image. To make the first dashboard now instead of at 00:30:
+
+```sh
+aws lambda invoke --function-name "$(terraform output -raw report_dashboard_function)" build/dashboard-invoke.json
+```
+
+Then open it in one of two ways:
+
+- **Console:** S3 → the reports bucket (`terraform output -raw reports_bucket`) → `reports/dashboard/latest.html` → **Open**.
+- **Terminal:** run the command that `terraform output -raw report_dashboard_link_command` prints. It gives a link that works for an hour.
+
+For a demo, refresh it more often: `report_dashboard_schedule = "rate(15 minutes)"` in `terraform.tfvars`. Tests: `npm install && npm test` in `infra/lambdas/report-dashboard`; one test file needs local MySQL (`docker compose up -d` in `backend/`).
 
 ### Set up QuickSight
 
@@ -310,10 +342,12 @@ With Route 53 and a domain: request an ACM certificate in **us-east-1** for Clou
 | Legitimate requests blocked with a WAF 403 | Find the rule in the WAF logs (us-east-1), then raise the rate limit or set `waf_mode = "count"` while you adjust it. |
 | Logins all share one rate limit after step 11.2 | The instances still run with `TRUST_PROXY_HOPS=1`. Start an instance refresh (step 7). |
 | QuickSight data source fails to create | `reports/quicksight/sales.csv` doesn't exist yet (generate the first reports), or the new IAM role hadn't propagated. Run `terraform apply` again. |
+| Dashboard Lambda fails with `Cannot find package 'mysql2'` | Run `npm ci --omit=dev` in `infra/lambdas/report-dashboard`, then `terraform apply`. |
+| The dashboard shows few orders older than a week | The data archiver has moved closed orders out of the database: with `demo.tfvars`, every delivered or cancelled order more than 7 days old. |
 
 ## Cost and teardown
 
-These run 24/7: the **ALB**, the **RDS instance**, the **NAT instance**, the API instance(s), and public IPv4 addresses. Most fall under the Free plan's allowances or credits, but the free EC2 hours (750/month) cover only one instance running all month. The NAT instance plus one API instance already use about 1,500 hours, so the extra comes out of your credits. The KMS key (about US$1/month) and Secrets Manager secret (about US$0.40/month) are small extras. The WAF costs about US$10/month (US$5 for the web ACL, US$1 per rule) plus US$0.60 per million requests; CloudFront traffic at this size fits in its always-free allowance (1 TB and 10 million requests a month). QuickSight bills per user from the day it's enabled; cancel the subscription in the QuickSight console when you're done, because `terraform destroy` only removes the dataset and data source. Destroy everything when you're not using it.
+These run 24/7: the **ALB**, the **RDS instance**, the **NAT instance**, the API instance(s), and public IPv4 addresses. Most fall under the Free plan's allowances or credits, but the free EC2 hours (750/month) cover only one instance running all month. The NAT instance plus one API instance already use about 1,500 hours, so the extra comes out of your credits. The KMS key (about US$1/month) and Secrets Manager secret (about US$0.40/month) are small extras. The WAF costs about US$10/month (US$5 for the web ACL, US$1 per rule) plus US$0.60 per million requests; CloudFront traffic at this size fits in its always-free allowance (1 TB and 10 million requests a month). QuickSight bills per user from the day it's enabled; cancel the subscription in the QuickSight console when you're done, because `terraform destroy` only removes the dataset and data source. The free dashboard in section 8 adds one short Lambda run a day, which the always-free Lambda and EventBridge Scheduler allowances cover. Destroy everything when you're not using it.
 
 ```sh
 # 1. In terraform.tfvars, allow deleting the database and the non-empty bucket:
