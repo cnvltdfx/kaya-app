@@ -233,7 +233,6 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--gold); outl
 .auth-logo { width: 84px; margin: 0 auto 10px; border-radius: 50%; }
 .divider { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: .8rem; margin: 18px 0; }
 .divider::before, .divider::after { content: ''; flex: 1; height: 1px; background: var(--line); }
-.sso-btn { width: 100%; justify-content: center; margin-bottom: 8px; background: #fff; border: 1px solid var(--line); color: var(--ink); }
 
 /* Help */
 details.faq { background: var(--paper); border: 1px solid var(--line); border-radius: 12px; padding: 14px 18px; margin-bottom: 10px; }

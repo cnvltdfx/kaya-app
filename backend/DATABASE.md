@@ -88,9 +88,9 @@ erDiagram
 
 | Table | What's in it |
 |---|---|
-| `users` | Customers, staff and admins. `role` is `customer`, `staff` or `admin`. `password_hash` is NULL for SSO-only accounts. The address is stored in the `address_*` columns. |
+| `users` | Customers, staff and admins. `role` is `customer`, `staff` or `admin`; with Cognito on, it's set from the user's Cognito groups at each login. `cognito_sub` links the row to its Cognito user and is NULL for local accounts and those from before Cognito. `password_hash` is used only by local sign-in. Emails like `legacy-<id>@invalid` mark old accounts retired when someone signed up with the same email. The address is stored in the `address_*` columns. |
 | `sessions` | Login sessions. Holds the SHA-256 hash of the bearer token, with a 7-day expiry. |
-| `mfa_challenges`, `reset_tokens` | Short-lived MFA codes (5 minutes) and password-reset tokens (30 minutes). |
+| `mfa_challenges`, `reset_tokens` | Local sign-in only: short-lived MFA codes (5 minutes) and password-reset tokens (30 minutes). |
 | `products` | The catalogue. `stock` is `UNSIGNED`, so it can never go below 0. `sale_pct` is the strikethrough sale. |
 | `promotions` | Promo codes (`WELCOME10`, `KAYA1111`, `FREESHIP`). |
 | `reviews` | One per user per product. `verified` means the reviewer had a paid order containing that product. |
@@ -116,7 +116,7 @@ These rows are inserted only when the database is empty:
 
 - **12 products**, with a 15% sale on Musang King Durian and 10% on the Heritage Gift Box.
 - **3 promo codes:** `WELCOME10`, `KAYA1111` and `FREESHIP`.
-- **3 accounts.** MFA is **off** for all of them, so the back office works in AWS too:
+- **3 accounts.** MFA is **off** for all of them. Their passwords work only in local development: in AWS, sign-in goes through Cognito.
 
   | Role | Email | Password |
   |---|---|---|

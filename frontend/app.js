@@ -73,6 +73,42 @@
   // Backend origin; empty means same origin. Set per environment in config.js.
   const apiBase = ((window.KK_CONFIG && window.KK_CONFIG.apiBase) || '').replace(/\/+$/, '');
 
+  // Cognito Managed Login, set in config.js by the AWS deploy. Unset means the local email + password forms.
+  const cognitoCfg = window.KK_CONFIG && window.KK_CONFIG.cognito;
+  // Managed Login has no Malay or Thai, so those fall back to its default, English.
+  const COGNITO_LANGS = { en: 'en', 'zh-Hans': 'zh-CN', 'zh-Hant': 'zh-TW' };
+  const b64url = (bytes) => btoa(String.fromCharCode(...new Uint8Array(bytes))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const randomToken = () => b64url(crypto.getRandomValues(new Uint8Array(32)));
+
+  // location.replace keeps the Back button from returning to a route that redirects straight back here.
+  async function startCognitoLogin(next, screen = 'login') {
+    const state = randomToken();
+    const codeVerifier = randomToken();
+    sessionStorage.setItem('kk_cognito', JSON.stringify({ state, codeVerifier, next }));
+    const challenge = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(codeVerifier));
+    const params = new URLSearchParams({
+      client_id: cognitoCfg.clientId, response_type: 'code', scope: 'openid email profile', redirect_uri: `${location.origin}/`,
+      state, code_challenge: b64url(challenge), code_challenge_method: 'S256',
+    });
+    if (COGNITO_LANGS[S.lang]) params.set('lang', COGNITO_LANGS[S.lang]);
+    location.replace(`${cognitoCfg.domain}/${screen}?${params}`);
+  }
+
+  // Handles the redirect back from Managed Login (/?code=...&state=... or /?error=...).
+  async function finishCognitoLogin() {
+    const q = new URLSearchParams(location.search);
+    if (!cognitoCfg || (!q.has('code') && !q.has('error'))) return;
+    let saved = null;
+    try { saved = JSON.parse(sessionStorage.getItem('kk_cognito')); } catch { /* treated as a failed sign-in */ }
+    sessionStorage.removeItem('kk_cognito');
+    history.replaceState(null, '', location.pathname + location.hash);
+    if (!q.get('code') || !saved || q.get('state') !== saved.state) { toast('Sign-in failed. Please try again.', 'error'); return; }
+    try {
+      const r = await api('POST', '/api/auth/cognito', { code: q.get('code'), codeVerifier: saved.codeVerifier, language: S.lang });
+      await onLoggedIn(r, /^#\//.test(saved.next || '') ? saved.next : null);
+    } catch (err) { toast(err.message, 'error'); }
+  }
+
   async function api(method, path, body, extraHeaders = {}) {
     const headers = { 'x-market': S.market, ...extraHeaders };
     if (S.token) headers.authorization = `Bearer ${S.token}`;
@@ -626,6 +662,10 @@
       try { await api('POST', '/api/auth/logout'); } catch { /* ignore */ }
       setSession(null, null);
       await refreshCartCount();
+      if (cognitoCfg) {
+        location.href = `${cognitoCfg.domain}/logout?${new URLSearchParams({ client_id: cognitoCfg.clientId, logout_uri: `${location.origin}/` })}`;
+        return;
+      }
       toast('Logged out');
       location.hash = '#/';
     };
@@ -642,16 +682,21 @@
       body.innerHTML = `<div class="card"><p class="muted small">Email & SMS messages sent to you (delivered via Amazon SES / SNS in production).</p>${notifications.length ? notifications.map((n) => `
         <div class="notif"><span class="ch ${n.channel === 'sms' ? 'warn-c' : 'ok-c'}">${esc(n.channel)}</span> <strong>${esc(n.subject)}</strong> <span class="muted small">· ${fmtDate(n.createdAt)}</span><div class="small">${esc(n.body)}</div></div>`).join('') : '<p class="muted">No notifications yet.</p>'}</div>`;
     } else if (tab === 'security') {
+      if (cognitoCfg) {
+        body.innerHTML = `<div class="card" style="max-width:480px"><h3>Password</h3>
+          <p class="muted small">Your password is managed by your sign-in account. To change it, use the reset page.</p>
+          <a class="btn btn-brown" href="#/forgot">${esc(t('resetPassword'))}</a></div>`;
+        return;
+      }
       body.innerHTML = `<div class="two-col" style="grid-template-columns:1fr 1fr">
         <form class="card" id="pw-form"><h3>Change password</h3>
           ${!u.hasPassword ? `<p class="muted small">You signed up with ${esc(u.ssoProvider)}. Set a password to also log in with email.</p>` : `<label class="field"><span>Current password</span><input type="password" name="current" autocomplete="current-password" required></label>`}
           <label class="field"><span>New password</span><input type="password" name="password" autocomplete="new-password" minlength="8" required></label>
           <button class="btn btn-brown">${esc(t('save'))}</button></form>
-        <div class="card"><h3>Two-factor authentication</h3>
-          ${u.role !== 'customer' ? '<p class="muted">MFA is mandatory for staff and admin accounts.</p><p class="status-dot ok-c">Enabled</p>' : `
+        ${u.role !== 'customer' ? '' : `<div class="card"><h3>Two-factor authentication</h3>
           <p class="muted small">Require a one-time code sent to your email whenever you log in.</p>
-          <label class="check"><input type="checkbox" id="mfa-toggle" ${u.mfaEnabled ? 'checked' : ''}> Enable email verification codes</label>`}
-        </div></div>`;
+          <label class="check"><input type="checkbox" id="mfa-toggle" ${u.mfaEnabled ? 'checked' : ''}> Enable email verification codes</label>
+        </div>`}</div>`;
       document.getElementById('pw-form').onsubmit = async (e) => {
         e.preventDefault();
         const f = new FormData(e.target);
@@ -664,7 +709,7 @@
     } else {
       const a = u.address || {};
       body.innerHTML = `<form class="card" id="profile-form" style="max-width:720px">
-        <div class="row"><label class="field"><span>${esc(t('name'))}</span><input type="text" name="name" value="${esc(u.name)}" required></label><label class="field"><span>${esc(t('email'))}</span><input type="email" name="email" value="${esc(u.email)}" required></label></div>
+        <div class="row"><label class="field"><span>${esc(t('name'))}</span><input type="text" name="name" value="${esc(u.name)}" required></label><label class="field"><span>${esc(t('email'))}</span><input type="email" name="email" value="${esc(u.email)}" ${cognitoCfg ? 'readonly' : ''} required></label></div>
         <div class="row"><label class="field"><span>${esc(t('phone'))}</span><input type="tel" name="phone" value="${esc(u.phone)}" placeholder="For SMS order updates"></label>
           <label class="field"><span>${esc(t('market'))}</span><select name="market">${Object.values(S.config.markets).map((m) => `<option value="${m.code}" ${m.code === u.market ? 'selected' : ''}>${FLAGS[m.code]} ${esc(m.name)} (${m.currency})</option>`).join('')}</select></label>
           <label class="field"><span>${esc(t('language'))}</span><select name="language">${S.config.languages.map((l) => `<option value="${l}" ${l === u.language ? 'selected' : ''}>${esc(window.I18N[l].langName)}</option>`).join('')}</select></label></div>
@@ -703,6 +748,7 @@
 
   function viewLogin(q) {
     const next = q.get('next');
+    if (cognitoCfg) return startCognitoLogin(next);
     authShell(t('login'), `
       <form id="login-form">
         <label class="field"><span>${esc(t('email'))}</span><input type="email" name="email" autocomplete="email" required></label>
@@ -710,9 +756,6 @@
         <button class="btn btn-primary btn-block">${esc(t('login'))}</button>
       </form>
       <p class="small" style="text-align:right;margin:8px 0 0"><a href="#/forgot">${esc(t('forgot'))}</a></p>
-      <div class="divider">or</div>
-      <button class="btn sso-btn" data-sso="google"><b style="color:#4285F4">G</b> Continue with Google</button>
-      <button class="btn sso-btn" data-sso="apple"> Continue with Apple</button>
       <p class="small" style="text-align:center;margin-top:16px">New here? <a href="#/register${next ? '?next=' + encodeURIComponent(next) : ''}">${esc(t('register'))}</a></p>
       <div class="test-hint">Demo accounts are listed in the README.</div>`);
     document.getElementById('login-form').onsubmit = async (e) => {
@@ -723,23 +766,6 @@
         if (r.mfaRequired) return viewMfa(r, next);
         await onLoggedIn(r, next);
       } catch (err) { authErr(err.message); }
-    };
-    app.querySelectorAll('[data-sso]').forEach((b) => (b.onclick = () => viewSso(b.dataset.sso, next)));
-  }
-
-  function viewSso(provider, next) {
-    const label = provider === 'google' ? 'Google' : 'Apple';
-    authShell(`Continue with ${label}`, `
-      <p class="muted small" style="text-align:center">Demo single sign-on. In production this redirects to ${label} via Amazon Cognito federated identities.</p>
-      <form id="sso-form">
-        <label class="field"><span>${esc(label)} account email</span><input type="email" name="email" required></label>
-        <label class="field"><span>${esc(t('name'))}</span><input type="text" name="name"></label>
-        <button class="btn btn-primary btn-block">Continue</button>
-      </form><p class="small" style="text-align:center"><a href="#/login">← Back</a></p>`);
-    document.getElementById('sso-form').onsubmit = async (e) => {
-      e.preventDefault();
-      const f = Object.fromEntries(new FormData(e.target));
-      try { await onLoggedIn(await api('POST', '/api/auth/sso', { provider, ...f }), next); } catch (err) { authErr(err.message); }
     };
   }
 
@@ -759,6 +785,7 @@
 
   function viewRegister(q) {
     const next = q.get('next');
+    if (cognitoCfg) return startCognitoLogin(next, 'signup');
     authShell(t('register'), `
       <form id="reg-form">
         <label class="field"><span>${esc(t('name'))}</span><input type="text" name="name" autocomplete="name" required></label>
@@ -776,6 +803,7 @@
   }
 
   function viewForgot() {
+    if (cognitoCfg) return startCognitoLogin(null, 'forgotPassword');
     authShell(t('resetPassword'), `
       <form id="forgot-form"><label class="field"><span>${esc(t('email'))}</span><input type="email" name="email" required></label><button class="btn btn-primary btn-block">Send reset link</button></form>
       <div id="forgot-out"></div><p class="small" style="text-align:center"><a href="#/login">← ${esc(t('login'))}</a></p>`);
@@ -789,6 +817,7 @@
   }
 
   function viewReset(q) {
+    if (cognitoCfg) { location.hash = '#/login'; return; }
     authShell(t('resetPassword'), `<form id="reset-form"><label class="field"><span>New ${esc(t('password').toLowerCase())}</span><input type="password" name="password" minlength="8" autocomplete="new-password" required></label><button class="btn btn-primary btn-block">${esc(t('resetPassword'))}</button></form>`);
     document.getElementById('reset-form').onsubmit = async (e) => {
       e.preventDefault();
@@ -911,6 +940,7 @@
       if (S.token) {
         try { S.user = (await api('GET', '/api/auth/me')).user; } catch { setSession(null, null); }
       }
+      await finishCognitoLogin();
       await refreshCartCount();
     } catch (e) {
       errorView(e);

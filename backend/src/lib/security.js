@@ -1,7 +1,8 @@
 // Password hashing, session tokens, auth middleware, security headers and rate limiting.
-// In AWS: Cognito (auth + MFA), WAF rate-based rules (bot mitigation), Secrets Manager (secrets).
+// In AWS: Cognito (identity, see cognito.js), WAF rate-based rules (bot mitigation), Secrets Manager (secrets).
 const crypto = require('crypto');
 const db = require('./db');
+const cognito = require('./cognito');
 
 const SESSION_TTL_MS = 7 * 24 * 3600 * 1000;
 
@@ -39,10 +40,10 @@ async function findUserByEmail(email) {
 async function insertUser(u, q = db) {
   const a = u.address || {};
   await q.query(
-    `INSERT INTO users (id, email, name, role, password_hash, sso_provider, market, language, phone,
+    `INSERT INTO users (id, cognito_sub, email, name, role, password_hash, sso_provider, market, language, phone,
        address_line1, address_line2, address_city, address_postcode, address_country, mfa_enabled, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [u.id, u.email, u.name, u.role, u.passwordHash, u.ssoProvider || null, u.market, u.language, u.phone || '',
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [u.id, u.cognitoSub || null, u.email, u.name, u.role, u.passwordHash, u.ssoProvider || null, u.market, u.language, u.phone || '',
       a.line1 || '', a.line2 || '', a.city || '', a.postcode || '', a.country || '', !!u.mfaEnabled, db.ts(u.createdAt)],
   );
   return u;
@@ -63,7 +64,9 @@ async function currentUser(req) {
   const h = req.get('authorization') || '';
   const token = h.startsWith('Bearer ') ? h.slice(7) : null;
   if (!token) return null;
-  const row = await db.one('SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ? AND s.expires_at > ?', [sha256(token), db.ts(Date.now())]);
+  // Outside local auth, only Cognito-linked users count, so sessions from before Cognito stop working.
+  const linked = cognito.localAuth ? '' : ' AND u.cognito_sub IS NOT NULL';
+  const row = await db.one(`SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ? AND s.expires_at > ?${linked}`, [sha256(token), db.ts(Date.now())]);
   return toUser(row);
 }
 
@@ -137,7 +140,7 @@ function rateLimit({ windowMs, max, name }) {
 
 function publicUser(u) {
   if (!u) return null;
-  const { passwordHash, ...rest } = u;
+  const { passwordHash, cognitoSub, ...rest } = u;
   return { ...rest, hasPassword: !!passwordHash };
 }
 
