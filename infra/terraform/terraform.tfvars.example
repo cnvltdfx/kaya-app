@@ -42,6 +42,9 @@ scheduled_scaling_actions = {
 # Reporting: set after enabling QuickSight and generating the first report (README "Reports")
 # quicksight_user_arn = "arn:aws:quicksight:ap-southeast-1:123456789012:user/default/your-name"
 
+# Free HTML sales dashboard (README "Free dashboard"). Default: daily at 00:30 SGT. For a demo:
+# report_dashboard_schedule = "rate(15 minutes)"
+
 # Data archival (archive.tf). Defaults: 03:00 SGT on the 15th; closed orders older than 2 years;
 # Glacier after 1 year; deleted after 5 years. For a quick demo, see demo.tfvars.example.
 # archive_schedule           = "cron(0 3 15 * ? *)"

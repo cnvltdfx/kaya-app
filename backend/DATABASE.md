@@ -152,6 +152,7 @@ These rows are inserted only when the database is empty:
 **Reporting.**
 - **Today:** the report Lambda keeps working as it is. The API instance it calls now reads the shared database, so the reports are correct with several instances running.
 - **To query MySQL directly from the Lambda:** the sales CSV is `orders` joined to `order_items` where `payment_status = 'paid'`. See `paidOrders()` in `src/services/reports.js`.
+- **The free dashboard** (`infra/lambdas/report-dashboard`, scheduled in `infra/terraform/reporting.tf`) does this: it reads paid orders from the last 180 days, and `products` for stock, read-only, and writes an HTML dashboard to the reports bucket.
 
 **Data archival.**
 - **Which orders count as closed:** those with `status IN ('delivered', 'cancelled')`, filtered on `created_at`. There's an index on `(status, created_at)` for this.

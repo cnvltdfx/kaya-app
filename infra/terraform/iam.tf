@@ -234,6 +234,44 @@ resource "aws_iam_role_policy" "report_generator" {
   policy = data.aws_iam_policy_document.report_generator.json
 }
 
+resource "aws_iam_role" "report_dashboard" {
+  name               = "${var.project_name}-report-dashboard-role"
+  assume_role_policy = data.aws_iam_policy_document.lambda_assume.json
+}
+
+# Logs, plus the network interfaces a VPC-attached function needs.
+resource "aws_iam_role_policy_attachment" "report_dashboard_vpc" {
+  role       = aws_iam_role.report_dashboard.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaVPCAccessExecutionRole"
+}
+
+data "aws_iam_policy_document" "report_dashboard" {
+  statement {
+    sid       = "WriteDashboards"
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.reports.arn}/reports/dashboard/*"]
+  }
+
+  statement {
+    sid       = "ReadDbSecret"
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = [aws_db_instance.main.master_user_secret[0].secret_arn]
+  }
+
+  # The DB secret and the reports bucket are encrypted with the project key.
+  statement {
+    sid       = "UseProjectKey"
+    actions   = ["kms:Decrypt", "kms:GenerateDataKey"]
+    resources = [aws_kms_key.main.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "report_dashboard" {
+  name   = "report-dashboard-access"
+  role   = aws_iam_role.report_dashboard.id
+  policy = data.aws_iam_policy_document.report_dashboard.json
+}
+
 data "aws_iam_policy_document" "scheduler_assume" {
   statement {
     actions = ["sts:AssumeRole"]
@@ -261,6 +299,12 @@ data "aws_iam_policy_document" "report_scheduler" {
     sid       = "InvokeReportGenerator"
     actions   = ["lambda:InvokeFunction"]
     resources = [aws_lambda_function.report_generator.arn]
+  }
+
+  statement {
+    sid       = "InvokeReportDashboard"
+    actions   = ["lambda:InvokeFunction"]
+    resources = [aws_lambda_function.report_dashboard.arn]
   }
 }
 
