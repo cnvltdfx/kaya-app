@@ -7,7 +7,7 @@
 import http from 'k6/http';
 import { check } from 'k6';
 
-const SITE = __ENV.SITE || 'https://d2tz3m76rw00ti.cloudfront.net';
+const SITE = __ENV.SITE || 'https://d758tib50v2c2.cloudfront.net';
 
 export const options = {
   scenarios: {

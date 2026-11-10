@@ -31,6 +31,17 @@ variable "waf_auth_rate_limit" {
   default     = 100
 }
 
+variable "waf_load_test_ips" {
+  description = "IPv4 CIDRs (e.g. 203.0.113.7/32) exempt from the site-wide rate limit only, for a load test in block mode. Every other rule still applies to them. Empty = no exemption; clear it after the test."
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for c in var.waf_load_test_ips : can(cidrhost(c, 0)) && strcontains(c, ".")])
+    error_message = "Each entry must be an IPv4 CIDR such as 203.0.113.7/32."
+  }
+}
+
 variable "waf_log_retention_days" {
   description = "Days to keep WAF logs in CloudWatch Logs (us-east-1)."
   type        = number
@@ -45,6 +56,19 @@ locals {
     "AWSManagedRulesCommonRuleSet" = { priority = 3, count_rules = ["SizeRestrictions_BODY"] }
     "AWSManagedRulesSQLiRuleSet"   = { priority = 4, count_rules = [] }
   }
+}
+
+# ---- Load-test exemption from the site-wide rate limit
+
+resource "aws_wafv2_ip_set" "load_test" {
+  count    = length(var.waf_load_test_ips) > 0 ? 1 : 0
+  provider = aws.us_east_1
+
+  name               = "${var.project_name}-load-test"
+  description        = "Exempt from the site-wide rate limit only, set by waf_load_test_ips"
+  scope              = "CLOUDFRONT"
+  ip_address_version = "IPV4"
+  addresses          = var.waf_load_test_ips
 }
 
 # ---- Web ACL
@@ -155,6 +179,20 @@ resource "aws_wafv2_web_acl" "cdn" {
         limit                 = var.waf_rate_limit
         evaluation_window_sec = 300
         aggregate_key_type    = "IP"
+
+        # Load-test IPs (waf_load_test_ips) are left out of this rule only.
+        dynamic "scope_down_statement" {
+          for_each = length(var.waf_load_test_ips) > 0 ? [1] : []
+          content {
+            not_statement {
+              statement {
+                ip_set_reference_statement {
+                  arn = aws_wafv2_ip_set.load_test[0].arn
+                }
+              }
+            }
+          }
+        }
       }
     }
 

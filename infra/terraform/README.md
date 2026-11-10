@@ -1,5 +1,7 @@
 # Deploying Kool Kaya Kitchen to AWS
 
+For the step-by-step demo deployment (block-mode WAF, fast expiry and archival, the 11.11 schedule), see [DEPLOY.md](DEPLOY.md).
+
 A quick guide to deploying the app with the Terraform in this folder. It creates a VPC, a NAT instance, an ALB, an EC2 Auto Scaling group running the app's Docker image from ECR, RDS for MySQL, and an S3 reports bucket, all in `ap-southeast-1`.
 
 It's sized for an AWS **Free plan** account, so it differs from the architecture diagram in two places:
@@ -25,7 +27,7 @@ Terraform state lives in the S3 bucket `kool-kaya-kitchen-tfstate-634993259271` 
 Sign in to the Kaya account before any Terraform command, then check you're in the right account:
 
 ```powershell
-$env:AWS_PROFILE = "kaya"
+$env:AWS_PROFILE = "kaya"     # only if your Kaya profile isn't "default" (aws configure list-profiles)
 aws sts get-caller-identity   # Account should be 634993259271
 terraform init
 ```
@@ -36,17 +38,28 @@ The bucket was created by hand (versioned, encrypted, public access blocked, HTT
 
 ```sh
 cd infra/terraform
-cp terraform.tfvars.example terraform.tfvars
+cp -n terraform.tfvars.example terraform.tfvars   # -n: never overwrite an existing terraform.tfvars
 ```
 
-All app data lives in RDS, so any number of instances can run. For a cheap demo or test, run one. Edit `terraform.tfvars`:
+`terraform.tfvars` is gitignored, so each person keeps their own. If you already have one, keep it and compare it with the example for new settings.
+
+All app data lives in RDS, so any number of instances can run. Pick one of these sizes in `terraform.tfvars`:
 
 ```hcl
+# Cheap test: one server, nothing pre-built.
 asg_min_size              = 1
 asg_max_size              = 1
 warm_pool_min_size        = 0
-scheduled_scaling_actions = {}   # the example sale schedule would scale up to 4
+scheduled_scaling_actions = {}
+
+# Scaling demo (infra/loadtest/DEMO.md): starts at 1, scales out to 3 from a warm pool in about 20 s.
+asg_min_size              = 1
+asg_max_size              = 3
+warm_pool_min_size        = 2
+scheduled_scaling_actions = {}   # or a sale window, see terraform.tfvars.example
 ```
+
+Before going above 3 servers, read [Running at scale](#running-at-scale).
 
 ## 3. Create the image repository and push the app
 
@@ -64,29 +77,42 @@ Go to the **repo root** and run the three commands that were printed: ECR login,
 
 Check that the push worked: `aws ecr list-images --repository-name kool-kaya-kitchen --region ap-southeast-1` should list `latest`. If it's empty, the instances never become healthy.
 
-**On Windows PowerShell,** the printed login can fail with `400 Bad Request`, `The stub received bad data`, or `no basic auth credentials` on push. Use Docker Desktop's ECR credential helper instead, from the repo root:
+**On Windows,** the printed login fails with `400 Bad Request` or `The stub received bad data`, then `no basic auth credentials` on push. Docker Desktop saves logins in Windows Credential Manager, which can't hold a token as long as ECR's (about 2,600 characters). Write the token into a separate Docker config instead, from the repo root:
 
 ```powershell
-aws configure export-credentials --format powershell | Out-String | Invoke-Expression
-$reg = "<account-id>.dkr.ecr.ap-southeast-1.amazonaws.com"
-New-Item -ItemType Directory -Force .dockercfg | Out-Null
-[IO.File]::WriteAllText("$PWD\.dockercfg\config.json", "{`"credHelpers`":{`"$reg`":`"ecr-login`"}}")
+$reg = "634993259271.dkr.ecr.ap-southeast-1.amazonaws.com"
+$cfg = "$env:USERPROFILE\.docker-ecr"
+New-Item -ItemType Directory -Force $cfg | Out-Null
+$tok  = aws ecr get-login-password --region ap-southeast-1
+$auth = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("AWS:$tok"))
+[IO.File]::WriteAllText("$cfg\config.json", (@{ auths = @{ $reg = @{ auth = $auth } } } | ConvertTo-Json -Depth 4))
 docker build -t "$reg/kool-kaya-kitchen:latest" backend
-docker --config .dockercfg push "$reg/kool-kaya-kitchen:latest"
+docker --config $cfg push "$reg/kool-kaya-kitchen:latest"
 ```
 
-The first line copies your AWS session into the shell. The credential helper needs it if you signed in with `aws login` or SSO. Add `.dockercfg/` to `.gitignore` if you keep it.
+The token lasts 12 hours; rerun the `$tok`, `$auth` and `WriteAllText` lines to refresh it. The config sits in your user folder, outside the repo.
 
 ## 4. Create everything else
 
-```sh
-(cd infra/lambdas/order-worker && npm ci --omit=dev)   # the order worker's zip bundles mysql2
-(cd infra/lambdas/order-expirer && npm ci --omit=dev)  # so does the order expirer's
-(cd infra/lambdas/data-archiver && npm ci --omit=dev)  # the archiver's zip bundles mysql2 and hyparquet-writer
-(cd infra/lambdas/report-dashboard && npm ci --omit=dev)  # so does the report dashboard's
+From the **repo root**, install the dependencies that four of the Lambda zips bundle (`mysql2`, and `hyparquet-writer` for the archiver). Terraform zips the folders as they are, so do this before every apply.
+
+```powershell
+# PowerShell
+foreach ($fn in 'order-worker','order-expirer','data-archiver','report-dashboard') { npm ci --omit=dev --prefix "infra/lambdas/$fn" }
 cd infra/terraform
-terraform apply
+terraform plan -out tfplan
+terraform apply tfplan
 ```
+
+```sh
+# bash
+for fn in order-worker order-expirer data-archiver report-dashboard; do npm ci --omit=dev --prefix "infra/lambdas/$fn"; done
+cd infra/terraform
+terraform plan -out tfplan
+terraform apply tfplan
+```
+
+The email sender and the report generator have no dependencies. Read the plan before applying, because the state is shared and the plan shows anyone else's changes too. Plan files hold secrets in plain text, so don't commit them.
 
 This takes about 10–15 minutes; the database is the slowest part.
 
@@ -158,10 +184,10 @@ EventBridge Scheduler → report-generator Lambda (in the VPC) → API server �
 - **Schedules** (Singapore time):
   - Daily at 00:05: sales for the last day, plus inventory.
   - Mondays at 00:10: sales for the last 7 days.
-- **Report generator** (`infra/lambdas/report-generator`): the sales data still lives inside the API server (`backend/src/lib/db.js`), not in the database.
+- **Report generator** (`infra/lambdas/report-generator`): the report code lives in the API (`backend/src/services/reports.js`), so the Lambda asks an API server to run it.
   - The Lambda finds a healthy in-service instance and calls its private report port (3001). The ALB never routes to that port; only the Lambda's security group can reach it.
-  - The app builds the CSV and JSON summary and uploads them to the reports bucket (`terraform output reports_bucket`) under `reports/`, encrypted with the project KMS key.
-  - Once the data moves to Aurora, the Lambda should query it directly instead.
+  - The app queries RDS, builds the CSV and JSON summary, and uploads them to the reports bucket (`terraform output reports_bucket`) under `reports/`, encrypted with the project KMS key.
+  - The report dashboard below already reads RDS directly; the generator could do the same and drop its dependence on a healthy API server.
 - **QuickSight feed:** each sales report also rewrites `reports/quicksight/sales.csv` with every paid order to date. The QuickSight dataset reads only that file, so overlapping daily, weekly and manual reports aren't double-counted. SPICE refreshes it daily at 00:30.
 
 Back office → Reports works as before and lists the scheduled runs too. Every instance reads the same database, so the reports are complete whichever instance the Lambda picks.
@@ -308,7 +334,7 @@ CloudFront's flat-rate plans (which bundle the WAF) can't be used on a Free plan
 Roll it out in this order so nobody gets locked out:
 
 1. **Apply with the defaults** (`waf_mode = "count"`, ALB still open). Open `site_url` and click through the shop, log in, check out and use the back office.
-2. **Lock the ALB to CloudFront.** In `terraform.tfvars` set `restrict_alb_to_cloudfront = true`, apply, then start an instance refresh (step 7) so the API trusts the extra proxy hop for client IPs (`TRUST_PROXY_HOPS=2`). Now the ALB accepts only CloudFront's IP ranges carrying the secret `X-Origin-Verify` header, and `http://<alb_dns_name>/api/...` returns 403. The `/health` check from the ALB itself is unaffected.
+2. **Lock the ALB to CloudFront.** In `terraform.tfvars` set `restrict_alb_to_cloudfront = true` and apply. The setting changes the instances' user data (`TRUST_PROXY_HOPS=2`, so the API trusts the extra proxy hop for client IPs), and the ASG replaces the instances with an automatic instance refresh. Now the ALB accepts only CloudFront's IP ranges carrying the secret `X-Origin-Verify` header. From your own machine, `http://<alb_dns_name>/api/...` times out, because the security group drops it; a request from a CloudFront IP without the header gets a 403. The `/health` check from the ALB itself is unaffected.
 3. **Review the WAF for a few days.** WAF console (region: Global / us-east-1) → `kool-kaya-kitchen-cdn` → Traffic overview, or CloudWatch Logs in us-east-1, log group `aws-waf-logs-kool-kaya-kitchen`. Look for counted matches on legitimate traffic.
 4. **Switch to blocking:** set `waf_mode = "block"` and apply.
 
@@ -326,6 +352,21 @@ eval "$(terraform output -raw frontend_invalidate_command)"   # optional: drop e
 
 With Route 53 and a domain: request an ACM certificate in **us-east-1** for CloudFront (add it as an alias on the distribution), and one in ap-southeast-1 for the ALB. Set `acm_certificate_arn` and `alb_origin_domain` (a name on the ALB certificate, e.g. `origin.example.com`, pointing at the ALB) so CloudFront reaches the ALB over HTTPS. Until then, the CloudFront → ALB leg is plain HTTP.
 
+## Running at scale
+
+The stack is sized for the Free plan, so these limits come first, before any Terraform setting. Check them before a demo with more than a few servers or real traffic.
+
+| Limit | What happens | Check or fix |
+|---|---|---|
+| Lambda concurrency: **10** at once for the account (new-account quota) | The order worker, email sender, expirer and report Lambdas share it. A large burst queues up instead of fanning out. | Service Quotas → AWS Lambda → Concurrent executions. Request 1,000 a few days ahead. |
+| EC2 On-Demand vCPU quota | Scale-out stops at the quota; the ASG Activity tab shows launch failures. A `t3.micro` is 2 vCPUs, and the NAT instance counts too. | Service Quotas → Amazon EC2 → Running On-Demand Standard instances. |
+| Database connections | Each API server opens up to 10 (`DB_POOL_SIZE`), plus the Lambdas'. A `db.t4g.micro` has a low `max_connections`, so many servers can exhaust it (`Too many connections`). | `SHOW VARIABLES LIKE 'max_connections';` then keep servers × 10 + Lambda concurrency below it, or raise `db_instance_class`. |
+| Free plan instance types | A larger `instance_type`, `nat_instance_type` or `db_instance_class` fails with `FreeTierRestrictionError`. | Upgrade the account to a paid plan first. |
+| One NAT instance (`t3.micro`), one app subnet (AZ A) | All outbound traffic (ECR, Secrets Manager, SQS, SNS, S3) goes through it. If it stops, every server and in-VPC Lambda loses outbound access. | Watch NAT CPU on the `kool-kaya-kitchen-ops` dashboard. On a paid plan, switch to a NAT Gateway. |
+| WAF rate limit: 2,000 requests per 5 minutes per IP | In block mode a load test from one machine is blocked (403). | Keep `waf_mode = "count"` for load tests. |
+
+Scaling is driven by `requests_per_target` (1,000 requests per server per minute) and `cpu_target_percent` (50). The warm pool holds `asg_max_size` minus the running servers (at least `warm_pool_min_size`), so raising the max also builds more stopped servers. They cost only their EBS volumes. For the load test runbook, see [infra/loadtest/DEMO.md](../loadtest/DEMO.md).
+
 ## Troubleshooting
 
 | Symptom | Likely cause |
@@ -340,7 +381,7 @@ With Route 53 and a domain: request an ACM certificate in **us-east-1** for Clou
 | `site_url` returns 403 for a page | The file isn't in `frontend/` (CloudFront can't list the bucket, so missing files return 403), or the distribution is still deploying. |
 | `/api/...` returns 403 `{"error":"Forbidden."}` through CloudFront | The request reached the ALB without the right `X-Origin-Verify` header. Run `terraform apply` so the distribution and the ALB rule hold the same value. |
 | Legitimate requests blocked with a WAF 403 | Find the rule in the WAF logs (us-east-1), then raise the rate limit or set `waf_mode = "count"` while you adjust it. |
-| Logins all share one rate limit after step 11.2 | The instances still run with `TRUST_PROXY_HOPS=1`. Start an instance refresh (step 7). |
+| Logins all share one rate limit after step 11.2 | The instances still run with `TRUST_PROXY_HOPS=1`: the automatic refresh hasn't finished or failed. Check the ASG's **Instance refresh** tab, or start one (step 7). |
 | QuickSight data source fails to create | `reports/quicksight/sales.csv` doesn't exist yet (generate the first reports), or the new IAM role hadn't propagated. Run `terraform apply` again. |
 | Dashboard Lambda fails with `Cannot find package 'mysql2'` | Run `npm ci --omit=dev` in `infra/lambdas/report-dashboard`, then `terraform apply`. |
 | The dashboard shows few orders older than a week | The data archiver has moved closed orders out of the database: with `demo.tfvars`, every delivered or cancelled order more than 7 days old. |
